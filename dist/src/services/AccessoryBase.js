@@ -7,6 +7,10 @@
  *
  * Services subclass this and implement attach().
  */
+import { toFiniteNumber } from '../util/sanitize.js';
+const HK_TILT_MIN = -90;
+const HK_TILT_MAX = 90;
+const HK_TILT_RANGE = HK_TILT_MAX - HK_TILT_MIN;
 export class AccessoryBase {
     accessory;
     ccu;
@@ -147,6 +151,39 @@ export class AccessoryBase {
         // Best-effort initial pulls so HomeKit doesn't sit on default values.
         this.ccu.getValue(deviceAddress, 'LOW_BAT').then(applyLow).catch(() => undefined);
         this.ccu.getValue(deviceAddress, 'OPERATING_VOLTAGE').then(applyVoltage).catch(() => undefined);
+    }
+    /**
+     * Add slat tilt to a WindowCovering service: Current/TargetHorizontalTiltAngle
+     * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). A tilt
+     * command writes LEVEL_2 only. Shared by the slat blind type and by the
+     * normal blind type when its imported `useSlats` setting is on.
+     */
+    attachSlatTilt(service, channelAddress) {
+        let currentTilt = 0;
+        let targetTilt = 0;
+        service.getCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle)
+            .setProps({ minValue: HK_TILT_MIN, maxValue: HK_TILT_MAX, minStep: 1 })
+            .onGet(this.wrapGet(() => currentTilt));
+        service.getCharacteristic(this.Characteristic.TargetHorizontalTiltAngle)
+            .setProps({ minValue: HK_TILT_MIN, maxValue: HK_TILT_MAX, minStep: 1 })
+            .onGet(this.wrapGet(() => targetTilt))
+            .onSet(this.wrapSet(async (value) => {
+            targetTilt = value;
+            const fraction = (value - HK_TILT_MIN) / HK_TILT_RANGE;
+            await this.ccu.setValue(channelAddress, 'LEVEL_2', fraction);
+        }));
+        const apply = (raw) => {
+            const f = toFiniteNumber(raw);
+            if (f === undefined)
+                return;
+            const angle = HK_TILT_MIN + Math.max(0, Math.min(1, f)) * HK_TILT_RANGE;
+            currentTilt = Math.round(angle);
+            targetTilt = currentTilt;
+            service.updateCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle, currentTilt);
+            service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, targetTilt);
+        };
+        this.registerListener(channelAddress, 'LEVEL_2', apply);
+        this.ccu.getValue(channelAddress, 'LEVEL_2').then(apply).catch(() => undefined);
     }
     dispose() {
         while (this.disposers.length > 0) {

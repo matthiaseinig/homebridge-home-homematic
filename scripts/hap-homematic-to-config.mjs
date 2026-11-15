@@ -30,7 +30,8 @@
  *                             block i = base+i in the full bridge order. Default 9875.
  *   --base <file.json>        Copy ccuIp, useTls, ccuAuth, interfaces and
  *                             interfacePorts from this JSON object (e.g. the
- *                             current platform block).
+ *                             current platform block, or a full Homebridge
+ *                             config.json, whose HomematicHap block is used).
  *   --ccu-ip <host>           CCU address (when --base is not given).
  *   --out <file.json>         Write the block(s) here (mode 0600) instead of stdout.
  *   --persist-out <dir>       Copy AccessoryInfo.*.json and IdentifierCache.*.json of
@@ -48,9 +49,20 @@
  *                             setupID are random. Bridges already in the --base
  *                             block (same name, newIdentity) keep their username,
  *                             pin, setupID, port and enabled state, so a re-run
- *                             changes nothing.
+ *                             changes nothing. Their ports are reserved before any
+ *                             new port is assigned, so a kept bridge never moves.
  *   --host-bridge-from-base   Multi-bridge: keep the --base block's _bridge (name,
  *                             username, port), e.g. the existing child bridge.
+ *   --reserve-ports <list>    --new-identities: comma-separated HAP ports already used
+ *                             by other Homebridge child bridges; new bridges avoid
+ *                             them. Repeatable. With a full Homebridge config.json as
+ *                             --base these are read from it (every other _bridge.port,
+ *                             the main bridge port and the bridge ports of other
+ *                             HomematicHap blocks) and this flag adds to them.
+ *   --keep-enabled            --new-identities: a bridge whose --base identity had to
+ *                             be discarded (old hap-homematic username, missing pin,
+ *                             username or port) is listed disabled, because it needs
+ *                             a new pairing; this flag keeps its enabled state.
  *
  * The output contains pairing pins and, with --base, CCU credentials.
  * Treat it like a password file. Nothing secret is printed.
@@ -71,7 +83,7 @@ const { importBackupTarball, splitReportIntoBridges, bridgeIdentityFor } = await
 );
 
 function parseArgs(argv) {
-  const opts = { bridges: [], enable: [], persistBridges: [], eventPortBase: 9875, name: 'HomeMatic Bridges', advertiser: 'ciao', smokeService: 'TemperatureAccessory' };
+  const opts = { bridges: [], enable: [], persistBridges: [], reservePorts: [], eventPortBase: 9875, name: 'HomeMatic Bridges', advertiser: 'ciao', smokeService: 'TemperatureAccessory' };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -83,6 +95,8 @@ function parseArgs(argv) {
     if (a === '--preserve-identity') opts.preserveIdentity = true;
     else if (a === '--new-identities') opts.newIdentities = true;
     else if (a === '--host-bridge-from-base') opts.hostBridgeFromBase = true;
+    else if (a === '--keep-enabled') opts.keepEnabled = true;
+    else if (a === '--reserve-ports') opts.reservePorts.push(...next().split(',').map((x) => x.trim()).filter(Boolean));
     else if (a === '--per-bridge-blocks') opts.perBridgeBlocks = true;
     else if (a === '--bridge') opts.bridges.push(next());
     else if (a === '--enable') opts.enable.push(next());
@@ -139,22 +153,52 @@ function randomSetupId() {
 }
 
 /**
+ * The identity a bridge already has in the --base block, if it can be kept:
+ * newIdentity, with username, pin and port, and not one of the hap-homematic
+ * usernames (those stay paired meanwhile). Otherwise `{ discarded: <reason> }`
+ * when the base has an entry for the bridge, or undefined when it has none.
+ */
+function keptIdentityFor(previous, oldUsernames) {
+  if (!previous) return undefined;
+  if (previous.newIdentity !== true) return { discarded: 'it is not a new-identity bridge' };
+  const missing = ['username', 'pincode', 'port'].filter((k) => !previous[k]);
+  if (missing.length > 0) return { discarded: `it has no ${missing.join(', ')}` };
+  const kept = { username: String(previous.username).toUpperCase(), pincode: previous.pincode, port: previous.port };
+  if (previous.setupID) kept.setupID = previous.setupID;
+  if (oldUsernames.has(kept.username)) return { discarded: 'its username is a hap-homematic username' };
+  return { kept };
+}
+
+/**
  * New identity for a hap-homematic bridge: the plugin's deterministic
  * username and port for the instance id (bridgeIdentityFor), a fresh pin
- * and setupID, or the identity this bridge already has in the --base block.
- * Never one of the hap-homematic usernames, which stay paired meanwhile.
+ * and setupID. Never one of the hap-homematic usernames, which stay paired
+ * meanwhile.
  */
-function newIdentityFor(b, previous, oldUsernames) {
-  if (previous && previous.newIdentity === true && previous.username && previous.pincode && previous.port) {
-    const kept = { username: String(previous.username).toUpperCase(), pincode: previous.pincode, port: previous.port };
-    if (previous.setupID) kept.setupID = previous.setupID;
-    if (!oldUsernames.has(kept.username)) return kept;
-  }
+function freshIdentityFor(b, oldUsernames) {
   let { username, port } = b.bridge;
   for (let i = 1; oldUsernames.has(username.toUpperCase()); i++) {
     ({ username, port } = bridgeIdentityFor(`${b.instanceUuid}:${i}`));
   }
   return { username, pincode: randomPin(), setupID: randomSetupId(), port };
+}
+
+/** The HomematicHap platform block of a full Homebridge config.json, else the object itself. */
+function baseBlockOf(base, blockName) {
+  if (!Array.isArray(base.platforms)) return { block: base, others: [] };
+  const mine = base.platforms.filter((p) => p?.platform === 'HomematicHap');
+  const block = mine.find((p) => p.name === blockName) ?? mine[0] ?? {};
+  return { block, others: [base.bridge, ...base.platforms, ...(base.accessories ?? [])].filter((x) => x && x !== block) };
+}
+
+/** HAP ports of other child bridges (and bridges of other HomematicHap blocks) in a full config. */
+function portsUsedByOthers(others) {
+  const ports = [];
+  for (const x of others) {
+    ports.push(x.port, x._bridge?.port);
+    for (const mb of x.multiBridge?.bridges ?? []) ports.push(mb?.port);
+  }
+  return ports.filter((p) => Number.isInteger(p));
 }
 
 function writeSecretFile(file, text) {
@@ -185,6 +229,13 @@ if (opts.hostBridgeFromBase && !opts.base) {
 if (opts.newIdentities && opts.smokeBridge) {
   throw new Error('--smoke-bridge is for the transplant layout; with --new-identities every bridge is already new');
 }
+const reservePorts = opts.reservePorts.map(Number);
+if (reservePorts.some((p) => !Number.isInteger(p) || p < 1 || p > 65535)) {
+  throw new Error('--reserve-ports needs a comma-separated list of ports in [1, 65535]');
+}
+if ((opts.reservePorts.length > 0 || opts.keepEnabled) && !(multi && opts.newIdentities)) {
+  throw new Error('--reserve-ports and --keep-enabled need --new-identities');
+}
 const preserve = (multi && !opts.newIdentities) || opts.preserveIdentity === true;
 
 const tarball = fs.readFileSync(opts.backup);
@@ -200,7 +251,8 @@ for (const [flag, names] of [['--bridge', opts.bridges], ['--enable', opts.enabl
   }
 }
 
-const base = opts.base ? JSON.parse(fs.readFileSync(opts.base, 'utf8')) : {};
+const baseFile = opts.base ? JSON.parse(fs.readFileSync(opts.base, 'utf8')) : {};
+const { block: base, others: otherBlocks } = baseBlockOf(baseFile, opts.name);
 const pick = (k) => (base[k] !== undefined ? { [k]: base[k] } : {});
 const ccuIp = base.ccuIp ?? opts.ccuIp;
 if (!ccuIp) {
@@ -230,17 +282,38 @@ if (multi && opts.newIdentities) {
   if (opts.hostBridgeFromBase && (typeof hostBridge?.username !== 'string' || !Number.isInteger(hostBridge?.port))) {
     throw new Error('--host-bridge-from-base: the --base block has no _bridge with username and port');
   }
-  const taken = new Set([opts.eventPortBase, hostBridge?.port].filter(Boolean));
-  const bridges = selected.map(({ b }) => {
+  // Ports a new bridge must not take: the event server, the host bridge, other
+  // child bridges, and every bridge kept from --base (a kept bridge never moves).
+  const taken = new Set([
+    opts.eventPortBase,
+    hostBridge?.port ?? bridgeIdentityFor(`multiBridge:${opts.name}`).port,
+    ...reservePorts,
+    ...portsUsedByOthers(otherBlocks),
+  ].filter(Boolean));
+  const decided = selected.map(({ b }) => ({ b, found: keptIdentityFor(previous.get(b.name), oldUsernames) }));
+  for (const { found } of decided) {
+    if (found?.kept) taken.add(found.kept.port);
+  }
+  const bridges = decided.map(({ b, found }) => {
     const prev = previous.get(b.name);
-    const id = newIdentityFor(b, prev, oldUsernames);
-    while (taken.has(id.port)) id.port += 1;
-    taken.add(id.port);
+    const id = found?.kept ?? freshIdentityFor(b, oldUsernames);
+    if (!found?.kept) {
+      while (taken.has(id.port)) id.port += 1;
+      taken.add(id.port);
+    }
+    const discarded = found?.discarded !== undefined;
+    if (discarded) {
+      process.stderr.write(`warning: bridge "${b.name}": the identity in --base was discarded (${found.discarded}); `
+        + `it gets a new username, pin and port and needs a new pairing`
+        + `${opts.keepEnabled ? '' : '; it is listed disabled (--keep-enabled keeps its state)'}\n`);
+    }
+    const wanted = enable.has(instanceName(b)) || (prev?.newIdentity === true && prev.enabled === true);
     const entry = {
       name: b.name,
       // A bridge kept from --base stays enabled: disabling it would take a
-      // paired bridge off the network.
-      enabled: enable.has(instanceName(b)) || (prev?.newIdentity === true && prev.enabled === true),
+      // paired bridge off the network. One whose identity was discarded is
+      // not paired any more, so it is not published until asked for.
+      enabled: discarded && !opts.keepEnabled ? false : wanted,
       newIdentity: true,
       hapHomematicIdentity: false,
       username: id.username,

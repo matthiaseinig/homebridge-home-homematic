@@ -11,7 +11,7 @@ const INC = 1;
 const DEC = 0;
 const STOP = 2;
 
-function setup(type: string, address: string) {
+function setup(type: string, address: string, settings?: Record<string, unknown>) {
   const config = resolveConfig({ platform: 'HomematicHap', ccuIp: '127.0.0.1' });
   const ccu = new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'blind') });
   const setValue = vi.spyOn(ccu, 'setValue').mockResolvedValue(undefined);
@@ -29,10 +29,10 @@ function setup(type: string, address: string) {
   };
   const S = class { static UUID = 'srv:WindowCovering'; UUID = 'srv:WindowCovering'; displayName = ''; subtype: string | undefined; };
   const Characteristic = { ...hap.Characteristic } as Record<string, unknown>;
-  for (const n of ['CurrentPosition', 'TargetPosition', 'PositionState', 'Name']) {
+  for (const n of ['CurrentPosition', 'TargetPosition', 'PositionState', 'Name', 'CurrentHorizontalTiltAngle', 'TargetHorizontalTiltAngle']) {
     Characteristic[n] = mk(n);
   }
-  const accessory = makeAccessory({ kind: 'channel', id: address, service: 'BlindAccessory' });
+  const accessory = makeAccessory('uuid', 'Blind', { kind: 'channel', id: address, service: 'BlindAccessory', settings });
   const ctx = {
     accessory: asPlatformAccessory(accessory),
     ccu,
@@ -177,5 +177,49 @@ describe('BlindAccessory movement', () => {
     expect(t.state()).toBe(INC);
     t.handler.dispose();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('BlindAccessory slat tilt (useSlats)', () => {
+  const TILT_CHARS = ['CurrentHorizontalTiltAngle', 'TargetHorizontalTiltAngle'];
+
+  it('without useSlats there is no tilt', () => {
+    for (const settings of [undefined, { useSlats: false }]) {
+      const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', settings);
+      for (const n of TILT_CHARS) expect(t.get(n)).toBeUndefined();
+    }
+  });
+
+  it('with useSlats tilt maps -90..90 to LEVEL_2 and sends LEVEL_2 only', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
+    await t.get('TargetHorizontalTiltAngle').onSetHandler!(0);
+    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'LEVEL_2', 0.5);
+    await t.get('TargetHorizontalTiltAngle').onSetHandler!(-90);
+    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'LEVEL_2', 0);
+    expect(t.setValue.mock.calls.every(([, dp]) => dp === 'LEVEL_2')).toBe(true);
+  });
+
+  it('with useSlats LEVEL_2 events update the tilt angle', () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
+    t.fire('LEVEL_2', 1);
+    expect(t.get('CurrentHorizontalTiltAngle').value).toBe(90);
+    expect(t.get('TargetHorizontalTiltAngle').value).toBe(90);
+  });
+
+  it('with useSlats movement reporting is intact', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
+    t.fire('LEVEL', 0);
+    await t.command(100);
+    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'LEVEL', 1);
+    expect(t.state()).toBe(INC);
+    t.fire('ACTIVITY_STATE', 1);
+    t.fire('LEVEL', 0.5);
+    expect(t.pos()).toBe(50);
+    expect(await t.tgt()).toBe(100);
+    t.fire('LEVEL_2', 0.5);
+    expect(await t.tgt()).toBe(100);
+    expect(t.state()).toBe(INC);
+    t.fire('ACTIVITY_STATE', 3);
+    expect(t.state()).toBe(STOP);
   });
 });

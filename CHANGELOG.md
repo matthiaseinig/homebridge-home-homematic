@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0
+
+- **Slat tilt on normal blinds.** A blind imported with `useSlats: true`
+  keeps the normal blind type (live movement reporting) and now also gets
+  CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle, mapped to the
+  HmIP `LEVEL_2` datapoint exactly like the slat blind type (shared code).
+  Without `useSlats` nothing changes.
+- **Import converter hardening** (`--new-identities`): the ports of bridges
+  kept from `--base` are reserved before new ports are assigned, so a kept
+  bridge never moves; ports of other Homebridge child bridges are avoided
+  (read from a full `config.json` passed as `--base`, or `--reserve-ports`);
+  a bridge whose `--base` identity has to be discarded (old hap-homematic
+  username, missing pin, username or port) prints a warning and is listed
+  disabled unless `--keep-enabled`.
+
 ## 1.5.0
 
 - **Import with new HomeKit identities.** `hap-homematic-to-config.mjs

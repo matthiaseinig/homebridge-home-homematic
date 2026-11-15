@@ -53,5 +53,12 @@ export declare abstract class AccessoryBase {
      * call this.
      */
     protected attachBattery(featureChannelAddress: string): void;
+    /**
+     * Add slat tilt to a WindowCovering service: Current/TargetHorizontalTiltAngle
+     * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). A tilt
+     * command writes LEVEL_2 only. Shared by the slat blind type and by the
+     * normal blind type when its imported `useSlats` setting is on.
+     */
+    protected attachSlatTilt(service: Service, channelAddress: string): void;
     dispose(): void;
 }
