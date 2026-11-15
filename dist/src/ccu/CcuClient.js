@@ -94,6 +94,7 @@ export class CcuClient extends EventEmitter {
         const callbackHost = this.resolveCallbackHost();
         const callbackUrl = `http://${callbackHost}:${this.eventServer.boundPort}`;
         const needed = this.interfacesInUse();
+        let refusalWarned = false;
         for (const { id, flag } of ENABLED_INTERFACES) {
             if (!this.config.interfaces[flag]) {
                 continue;
@@ -122,7 +123,13 @@ export class CcuClient extends EventEmitter {
             }
             catch (err) {
                 const msg = err.message;
-                this.log.warn('Could not subscribe to %s: %s', id, msg);
+                // The credentials refusal is the same for every interface: say it once per start.
+                if (msg !== TLS_CREDENTIALS_REFUSED || !refusalWarned) {
+                    this.log.warn('Could not subscribe to %s: %s', id, msg);
+                }
+                if (msg === TLS_CREDENTIALS_REFUSED) {
+                    refusalWarned = true;
+                }
                 if (/ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH/.test(msg)) {
                     this.log.warn('Hint: %s:%d is not reachable from this host. On RaspberryMatic, '
                         + 'open the CCU WebUI → Settings → Control Panel → Security → '
@@ -191,6 +198,14 @@ export class CcuClient extends EventEmitter {
                 // loopback URL (xmlrpc://127.0.0.1:32001, :32010, :39292/groups).
                 // Those ports only listen on the CCU itself; from another host the
                 // interfaces are reached on the external ports 2001/2010/9292.
+                // The real answer carries no url (only name, port, info), so the
+                // internal ports are mapped by number regardless of the url.
+                const external = INTERNAL_TO_EXTERNAL_PORT[i.port];
+                if (remoteCcu && external !== undefined) {
+                    this.discoveredPorts.set(id, external);
+                    this.log.debug('Interface %s reported CCU-internal port %d; using external port %d', id, i.port, external);
+                    continue;
+                }
                 if (remoteCcu && isLoopbackHost(urlHost(i.url))) {
                     this.log.debug('Interface %s reported CCU-internal %s; using the external port', id, i.url ?? '');
                     continue;
@@ -334,6 +349,9 @@ export class CcuClient extends EventEmitter {
         const fullAddress = `${ev.channelAddress}.${ev.datapoint}`;
         const set = this.datapointListeners.get(fullAddress);
         if (!set) {
+            if (ev.datapoint === 'IP_ADDRESS') {
+                return;
+            }
             this.log.debug('Unrouted event %s = %s', fullAddress, String(ev.value));
             return;
         }
@@ -446,6 +464,14 @@ function urlHost(url) {
     const m = url?.match(/^[a-z][a-z0-9+.-]*:\/\/(\[[^\]]+\]|[^/:]+)/i);
     return m ? m[1].replace(/^\[|\]$/g, '') : undefined;
 }
+/** CCU-internal XML-RPC ports and the external ports a remote host must use. */
+const INTERNAL_TO_EXTERNAL_PORT = {
+    31999: 1999,
+    32000: 2000,
+    32001: 2001,
+    32010: 2010,
+    39292: 9292,
+};
 function isLoopbackHost(host) {
     if (!host) {
         return false;

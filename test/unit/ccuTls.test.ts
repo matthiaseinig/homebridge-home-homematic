@@ -223,7 +223,19 @@ describe.skipIf(!haveOpenssl())('RpcClient over TLS against a self-signed CCU', 
       execFile(process.execPath, [script, '127.0.0.1', String(port)], { timeout: 8000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
     });
     expect(out).toContain(`tlsCertFingerprint: ${fingerprint}`);
+    expect(out.trim().split('\n')).toHaveLength(1);
     expect(requests).toEqual([]);
+  });
+
+  it('scripts/ccu-cert-fingerprint.mjs --verbose adds subject, issuer and expiry', async () => {
+    const port = await ccu();
+    const script = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'ccu-cert-fingerprint.mjs');
+    const { execFile } = await import('node:child_process');
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(process.execPath, [script, '127.0.0.1', String(port), '--verbose'], { timeout: 8000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    });
+    expect(out).toContain(`tlsCertFingerprint: ${fingerprint}`);
+    expect(out).toMatch(/subject CN.*valid until/);
   });
 
   it('sends no Authorization header when no auth is configured', async () => {
