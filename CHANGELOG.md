@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.1
+
+- **Blind status channel: only for wired actuator layouts.** The transmitter is
+  now found from the device's channel types (the nearest preceding
+  `BLIND_TRANSMITTER` or `SHUTTER_TRANSMITTER`) and used only when it is the
+  first channel of a group of four (HmIPW-DRBL4, DRBLI4, DRSI4 style). Layouts
+  such as HmIP-BROLL, FROLL, BBL and FBL (key channels 1-2, transmitter on
+  channel 3, virtual receivers 4-6) keep the virtual channel, because their
+  virtual receiver follows wall button moves. Unknown channel types also keep
+  the virtual channel; there is no arithmetic guess and no warning.
+- Fix a race after a HomeKit TargetPosition write: a stale "stable" report
+  (`PROCESS` 0 or `ACTIVITY_STATE` 3) from the transmitter, with a `LEVEL`
+  different from the new target, is ignored until a moving report arrives or
+  about 5 s pass, so TargetPosition no longer jumps back to the old value.
+- Slat tilt (`LEVEL_2`) uses one source at a time like position: the
+  transmitter once it has answered, otherwise the virtual channel.
+- The config UI server bundle is rebuilt from a clean `npm ci`.
+
 ## 1.8.0
 
 - **Blinds: position and state now come from the status channel.** HmIP

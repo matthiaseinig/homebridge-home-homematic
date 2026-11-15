@@ -45,7 +45,7 @@ import type {
 } from './types.js';
 import { ConfigError, resolveConfig } from './util/config.js';
 import { PrefixedLogger } from './util/logger.js';
-import { channelDisplayName, findChannel, programDisplayName, variableDisplayName } from './util/mappings.js';
+import { channelDisplayName, deviceChannels, findChannel, programDisplayName, variableDisplayName } from './util/mappings.js';
 import { PluginStorage } from './util/storage.js';
 
 interface ManagedAccessory {
@@ -309,7 +309,7 @@ export class HomematicPlatform implements DynamicPlatformPlugin {
     // Services name their HAP services after the channel. Use the HomeKit
     // name (as hap-homematic did), not the raw CCU channel name, which often
     // contains characters HomeKit rejects (`OG:Bad:Rollo`, `HmIP-WTH-2 0001…:1`).
-    handler.attach({ ...channel, name: displayName });
+    handler.attach({ ...channel, name: displayName, siblings: await this.siblingsOf(address) });
     this.managed.set(uuid, { accessory, handler });
   }
 
@@ -424,6 +424,10 @@ export class HomematicPlatform implements DynamicPlatformPlugin {
     }
     this.log.info('Removing the cached gas meter accessory of this block (now on a multi-bridge or off)');
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, cachedGas);
+  }
+
+  private async siblingsOf(address: string): Promise<CcuChannel[] | undefined> {
+    return this.devicesMemo === undefined ? undefined : deviceChannels(await this.devicesMemo, address);
   }
 
   private async fetchChannel(address: string, fallbackName: string | undefined): Promise<CcuChannel> {

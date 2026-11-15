@@ -44,6 +44,7 @@ export declare class HomematicPlatform implements DynamicPlatformPlugin {
     private startGas;
     /** A cached host gas accessory whose gas meter now lives on a multi-bridge (or is off) is removed. */
     private dropMovedGasAccessory;
+    private siblingsOf;
     private fetchChannel;
     /**
      * Accessory UUID. With `hapHomematicIdentity` and a `uuidSeed` from the

@@ -220,6 +220,8 @@ export interface CcuChannel {
   index: number;
   type: string;        // e.g. SWITCH_VIRTUAL_RECEIVER
   name: string;
+  /** All channels of the same device (set when a service is attached; used to find a blind's status channel). */
+  siblings?: CcuChannel[];
 }
 
 export interface CcuVariable {

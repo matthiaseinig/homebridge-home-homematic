@@ -202,6 +202,7 @@ export abstract class AccessoryBase {
     channelAddress: string,
     isMoving: () => boolean,
     statusAddress?: string,
+    statusActive: () => boolean = () => false,
   ): void {
     let currentTilt = 0;
     let targetTilt = 0;
@@ -242,9 +243,14 @@ export abstract class AccessoryBase {
 
     // `statusAddress` is the transmitter of an HmIP group: it also sees tilt
     // changes made by a wall button. Writes still go to `channelAddress`.
-    this.registerListener(channelAddress, 'LEVEL_2', apply);
+    // One source at a time, like position: the transmitter once it has answered.
+    this.registerListener(channelAddress, 'LEVEL_2', (raw) => {
+      if (!statusActive()) apply(raw);
+    });
     if (statusAddress !== undefined) {
-      this.registerListener(statusAddress, 'LEVEL_2', apply);
+      this.registerListener(statusAddress, 'LEVEL_2', (raw) => {
+        if (statusActive()) apply(raw);
+      });
       this.ccu.getValue(statusAddress, 'LEVEL_2')
         .then((raw) => (toFiniteNumber(raw) === undefined ? this.ccu.getValue(channelAddress, 'LEVEL_2') : raw))
         .catch(() => this.ccu.getValue(channelAddress, 'LEVEL_2'))

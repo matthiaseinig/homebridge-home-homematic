@@ -15,7 +15,7 @@ import type { ChannelService, ProgramService, ServiceContext, VariableService } 
 import { PLUGIN_NAME } from '../settings.js';
 import type { AccessoryContext, CcuDevice, CcuVariable, MultiBridgeEntry } from '../types.js';
 import type { PrefixedLogger } from '../util/logger.js';
-import { channelDisplayName, findChannel, programDisplayName, variableDisplayName } from '../util/mappings.js';
+import { channelDisplayName, deviceChannels, findChannel, programDisplayName, variableDisplayName } from '../util/mappings.js';
 import { BridgedAccessoryHandle, type HapAccessory } from './BridgedAccessoryHandle.js';
 
 export type HapBridge = InstanceType<HAP['Bridge']>;
@@ -159,7 +159,7 @@ class AccessoryFactory {
       seed: legacy ? m.uuidSeed! : `channel:${m.address}`,
       legacy,
       context: { kind: 'channel', id: m.address, service: def.key, subtype: m.subtype, settings: m.settings, name, legacyLayout: legacy },
-      attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach({ ...channel, name })),
+      attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach({ ...channel, name, siblings: deviceChannels(this.snapshot.devices, m.address) })),
     };
   }
 

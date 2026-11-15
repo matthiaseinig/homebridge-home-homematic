@@ -18,4 +18,6 @@ export declare function programDisplayName(mapping: Pick<ProgramMapping, 'name' 
  * The channel with this address, or a stub when the CCU does not list it
  * (the accessory still registers; events flow once the CCU sees it).
  */
+/** Channels of the device that owns `address`, or undefined when the device is not in the listing. */
+export declare function deviceChannels(devices: CcuDevice[], address: string): CcuChannel[] | undefined;
 export declare function findChannel(devices: CcuDevice[], address: string, fallbackName: string | undefined): CcuChannel;

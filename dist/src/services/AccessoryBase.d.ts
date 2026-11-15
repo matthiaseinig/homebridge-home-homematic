@@ -62,6 +62,6 @@ export declare abstract class AccessoryBase {
      * are not touched: the handler writes LEVEL itself. Shared by the slat blind
      * type and by the normal blind type when its imported `useSlats` setting is on.
      */
-    protected attachSlatTilt(service: Service, channelAddress: string, isMoving: () => boolean, statusAddress?: string): void;
+    protected attachSlatTilt(service: Service, channelAddress: string, isMoving: () => boolean, statusAddress?: string, statusActive?: () => boolean): void;
     dispose(): void;
 }

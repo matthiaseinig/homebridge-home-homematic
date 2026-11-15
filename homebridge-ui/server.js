@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
-// ../homebridge-homematic-hap-work/node_modules/@homebridge/plugin-ui-utils/dist/server.js
+// node_modules/@homebridge/plugin-ui-utils/dist/server.js
 import process from "node:process";
 var HomebridgePluginUiServer = class {
   handlers = {};

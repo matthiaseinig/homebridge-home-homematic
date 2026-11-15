@@ -14,8 +14,29 @@ const DEV = 'HmIPW.0001';
 
 type Values = Record<string, unknown>;
 
+const ch = (dev: string, index: number, type: string): CcuChannel => ({ address: `${dev}:${index}`, name: `c${index}`, index, type });
+/** HmIPW-DRBL4: transmitters 1/5/9/13, each followed by three virtual receivers. */
+function drbl4(dev = DEV): CcuChannel[] {
+  const out: CcuChannel[] = [];
+  for (let n = 1; n <= 16; n++) out.push(ch(dev, n, (n - 1) % 4 === 0 ? 'BLIND_TRANSMITTER' : 'BLIND_VIRTUAL_RECEIVER'));
+  return out;
+}
+/** HmIP-BROLL (not supported by the status channel feature): 1-2 key transceivers, 3 transmitter, 4-6 virtual receivers. */
+function broll(dev = DEV, transmitter = 'SHUTTER_TRANSMITTER', virtual = 'SHUTTER_VIRTUAL_RECEIVER'): CcuChannel[] {
+  return [
+    ch(dev, 1, 'KEY_TRANSCEIVER'), ch(dev, 2, 'KEY_TRANSCEIVER'), ch(dev, 3, transmitter),
+    ch(dev, 4, virtual), ch(dev, 5, virtual), ch(dev, 6, virtual),
+  ];
+}
+
 /** `values` maps "<address>.<datapoint>" to what getValue answers; a missing key rejects. */
-async function setup(type: string, n: number, values: Values, settings?: Record<string, unknown>) {
+async function setup(
+  type: string,
+  n: number,
+  values: Values,
+  settings?: Record<string, unknown>,
+  siblings: CcuChannel[] | null = drbl4(),
+) {
   const address = `${DEV}:${n}`;
   const config = resolveConfig({ platform: 'HomematicHap', ccuIp: '127.0.0.1' });
   const ccu = new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'blind') });
@@ -50,7 +71,7 @@ async function setup(type: string, n: number, values: Values, settings?: Record<
     Service: { ...hap.Service, WindowCovering: S },
     Characteristic,
   } as unknown as ServiceContext;
-  const channel: CcuChannel = { address, name: 'Blind', index: n, type };
+  const channel: CcuChannel = { address, name: 'Blind', index: n, type, ...(siblings ? { siblings } : {}) };
   const handler = blindService.build(ctx);
   handler.attach(channel);
   await vi.advanceTimersByTimeAsync(0);
@@ -67,19 +88,39 @@ async function setup(type: string, n: number, values: Values, settings?: Record<
 const status = (level = 0.5): Values => ({ [`${DEV}:1.LEVEL`]: level, [`${DEV}:2.LEVEL`]: 0.1 });
 
 describe('transmitterAddress', () => {
-  it('maps virtual receivers of each group of four to the first channel', () => {
-    const map = (n: number) => transmitterAddress(`X:${n}`);
-    expect([2, 3, 4].map(map)).toEqual(['X:1', 'X:1', 'X:1']);
-    expect([6, 7, 8].map(map)).toEqual(['X:5', 'X:5', 'X:5']);
-    expect([10, 11, 12].map(map)).toEqual(['X:9', 'X:9', 'X:9']);
-    expect([14, 15, 16].map(map)).toEqual(['X:13', 'X:13', 'X:13']);
+  it('DRBL4: maps virtual receivers to the transmitter of their group', () => {
+    const map = (n: number) => transmitterAddress(`${DEV}:${n}`, drbl4());
+    expect([2, 3, 4].map(map)).toEqual([`${DEV}:1`, `${DEV}:1`, `${DEV}:1`]);
+    expect([6, 7, 8].map(map)).toEqual([`${DEV}:5`, `${DEV}:5`, `${DEV}:5`]);
+    expect([10, 11, 12].map(map)).toEqual([`${DEV}:9`, `${DEV}:9`, `${DEV}:9`]);
+    expect([14, 15, 16].map(map)).toEqual([`${DEV}:13`, `${DEV}:13`, `${DEV}:13`]);
   });
 
-  it('has no transmitter for a group start, channel 0 or an address without index', () => {
-    expect(transmitterAddress('X:1')).toBeUndefined();
-    expect(transmitterAddress('X:5')).toBeUndefined();
-    expect(transmitterAddress('X:0')).toBeUndefined();
-    expect(transmitterAddress('X')).toBeUndefined();
+  it('BROLL, FROLL, BBL, FBL layouts (transmitter is channel 3): no transmitter, virtual channel as before', () => {
+    for (const layout of [broll(), broll(DEV, 'BLIND_TRANSMITTER', 'BLIND_VIRTUAL_RECEIVER')]) {
+      for (const n of [4, 5, 6]) {
+        expect(transmitterAddress(`${DEV}:${n}`, layout)).toBeUndefined();
+      }
+    }
+  });
+
+  it('has no transmitter for the transmitter itself, a key channel, channel 0 or an address without index', () => {
+    expect(transmitterAddress(`${DEV}:1`, drbl4())).toBeUndefined();
+    expect(transmitterAddress(`${DEV}:5`, drbl4())).toBeUndefined();
+    expect(transmitterAddress(`${DEV}:2`, broll())).toBeUndefined();
+    expect(transmitterAddress(`${DEV}:0`, drbl4())).toBeUndefined();
+    expect(transmitterAddress(DEV, drbl4())).toBeUndefined();
+  });
+
+  it('ignores channels of other devices and later channels', () => {
+    const others = [...drbl4('OTHER'), ch(DEV, 9, 'BLIND_TRANSMITTER'), ch(DEV, 2, 'BLIND_VIRTUAL_RECEIVER')];
+    expect(transmitterAddress(`${DEV}:2`, others)).toBeUndefined();
+  });
+
+  it('unknown channel types: no transmitter (virtual-only), no arithmetic guess', () => {
+    expect(transmitterAddress(`${DEV}:2`, undefined)).toBeUndefined();
+    expect(transmitterAddress(`${DEV}:2`, [])).toBeUndefined();
+    expect(transmitterAddress(`${DEV}:6`, [ch(DEV, 5, ''), ch(DEV, 6, '')])).toBeUndefined();
   });
 });
 
@@ -208,6 +249,65 @@ describe('BlindAccessory status channel (HmIP virtual receivers)', () => {
     expect(u.pos()).toBe(50);
   });
 
+  it('BROLL layout: channel 6 keeps the virtual channel, the transmitter is never read, no warning', async () => {
+    const values = { [`${DEV}:3.LEVEL`]: 0.6, [`${DEV}:6.LEVEL`]: 0.2 };
+    const t = await setup('SHUTTER_VIRTUAL_RECEIVER', 6, values, undefined, broll());
+    expect(t.getValue).not.toHaveBeenCalledWith(`${DEV}:3`, 'LEVEL');
+    expect(t.pos()).toBe(20);
+    t.fire(3, 'LEVEL', 0.4);
+    expect(t.pos()).toBe(20);
+    t.fire(6, 'LEVEL', 0.9);
+    expect(t.pos()).toBe(90);
+    const warns = (t.rawLog.warn as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).includes('Status channel'));
+    expect(warns).toHaveLength(0);
+  });
+
+  it('without channel types the virtual channel is used and the transmitter is never read', async () => {
+    const t = await setup('BLIND_VIRTUAL_RECEIVER', 2, { ...status(0.9), [`${DEV}:2.LEVEL`]: 0.4 }, undefined, null);
+    expect(t.getValue).not.toHaveBeenCalledWith(`${DEV}:1`, 'LEVEL');
+    expect(t.pos()).toBe(40);
+    t.fire(1, 'LEVEL', 0.9);
+    expect(t.pos()).toBe(40);
+  });
+
+  it('a stale stable report from the transmitter before the motor starts does not undo the target', async () => {
+    const t = await setup('BLIND_VIRTUAL_RECEIVER', 2, status(0));
+    await t.command(100);
+    t.fire(1, 'PROCESS', 0);
+    t.fire(1, 'ACTIVITY_STATE', 3);
+    expect(await t.tgt()).toBe(100);
+    expect(t.state()).toBe(INC);
+    t.fire(1, 'ACTIVITY_STATE', 1);
+    t.fire(1, 'LEVEL', 0.5);
+    expect(await t.tgt()).toBe(100);
+    t.fire(1, 'LEVEL', 1);
+    t.fire(1, 'ACTIVITY_STATE', 3);
+    expect(t.state()).toBe(STOP);
+    expect(await t.tgt()).toBe(100);
+  });
+
+  it('the stale-stable guard ends after about 5 s, and a moving report ends it earlier', async () => {
+    const t = await setup('BLIND_VIRTUAL_RECEIVER', 2, status(0));
+    await t.command(100);
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(t.state()).toBe(STOP);
+    expect(await t.tgt()).toBe(0);
+    await t.command(100);
+    t.fire(1, 'PROCESS', 1);
+    t.fire(1, 'PROCESS', 0);
+    expect(t.state()).toBe(STOP);
+    expect(await t.tgt()).toBe(0);
+  });
+
+  it('a stable report whose LEVEL already equals the target is not stale', async () => {
+    const t = await setup('BLIND_VIRTUAL_RECEIVER', 2, status(0));
+    await t.command(100);
+    t.fire(1, 'LEVEL', 1);
+    t.fire(1, 'PROCESS', 0);
+    expect(t.state()).toBe(STOP);
+    expect(await t.tgt()).toBe(100);
+  });
+
   describe('slats (useSlats)', () => {
     it('LEVEL_2 from the transmitter updates the tilt; tilt writes still target the virtual channel', async () => {
       const values = { ...status(0.5), [`${DEV}:1.LEVEL_2`]: 1 };
@@ -221,6 +321,13 @@ describe('BlindAccessory status channel (HmIP virtual receivers)', () => {
       for (const call of t.setValue.mock.calls) {
         expect(String(call[0])).toBe(`${DEV}:2`);
       }
+    });
+
+    it('tilt has one source: virtual LEVEL_2 events are ignored while the transmitter drives', async () => {
+      const values = { ...status(0.5), [`${DEV}:1.LEVEL_2`]: 1 };
+      const t = await setup('BLIND_VIRTUAL_RECEIVER', 2, values, { useSlats: true });
+      t.fire(2, 'LEVEL_2', 0);
+      expect(t.get('CurrentHorizontalTiltAngle').value).toBe(90);
     });
 
     it('falls back to the virtual LEVEL_2 when the transmitter has none', async () => {

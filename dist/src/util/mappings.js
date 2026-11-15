@@ -31,6 +31,10 @@ export function programDisplayName(mapping) {
  * The channel with this address, or a stub when the CCU does not list it
  * (the accessory still registers; events flow once the CCU sees it).
  */
+/** Channels of the device that owns `address`, or undefined when the device is not in the listing. */
+export function deviceChannels(devices, address) {
+    return devices.find((d) => d.channels.some((c) => c.address === address))?.channels;
+}
 export function findChannel(devices, address, fallbackName) {
     for (const device of devices) {
         const channel = device.channels.find((c) => c.address === address);
