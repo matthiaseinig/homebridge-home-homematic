@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CcuClient } from '../../src/ccu/CcuClient.js';
+import { RpcClient } from '../../src/ccu/RpcClient.js';
 import { TLS_CREDENTIALS_REFUSED } from '../../src/ccu/ccuTls.js';
 import { resolveConfig } from '../../src/util/config.js';
 import { PrefixedLogger } from '../../src/util/logger.js';
@@ -301,14 +302,21 @@ describe('CcuClient skips CCU-internal loopback interface URLs', () => {
   }
 
   const CCU3_LIST = [
-    { name: 'BidCos-RF', port: 32001, url: 'xmlrpc://127.0.0.1:32001' },
-    { name: 'HmIP-RF', port: 32010, url: 'xmlrpc://127.0.0.1:32010' },
-    { name: 'VirtualDevices', port: 39292, url: 'xmlrpc://127.0.0.1:39292/groups' },
+    { name: 'BidCos-RF', port: 32001 },
+    { name: 'HmIP-RF', port: 32010 },
+    { name: 'VirtualDevices', port: 39292 },
   ];
 
-  it('ignores 127.0.0.1 URLs for a remote CCU, leaving the external defaults', async () => {
-    const m = await discovered(remoteCcu('10.0.0.2'), CCU3_LIST);
-    expect(m.size).toBe(0);
+  it('maps CCU-internal ports (no url in the real answer) to the external ports for a remote CCU', async () => {
+    const m = await discovered(remoteCcu('10.0.0.2'), [...CCU3_LIST, { name: 'BidCos-Wired', port: 32000 }]);
+    expect([...m.entries()]).toEqual([
+      ['BidCos-RF', 2001], ['HmIP-RF', 2010], ['VirtualDevices', 9292], ['BidCos-Wired', 2000],
+    ]);
+  });
+
+  it('ignores 127.0.0.1 URLs for a remote CCU, mapping to the external ports', async () => {
+    const m = await discovered(remoteCcu('10.0.0.2'), CCU3_LIST.map((i) => ({ ...i, url: `xmlrpc://127.0.0.1:${i.port}` })));
+    expect(m.get('HmIP-RF')).toBe(2010);
   });
 
   it('keeps loopback URLs when the CCU itself is the local host', async () => {
@@ -323,7 +331,7 @@ describe('CcuClient skips CCU-internal loopback interface URLs', () => {
       { name: 'VirtualDevices', port: 39292, url: 'xmlrpc://localhost:39292/groups' },
       { name: 'CUxD', port: 8701, url: 'xmlrpc://[::1]:8701' },
     ]);
-    expect([...m.entries()]).toEqual([['BidCos-RF', 2001], ['HmIP-RF', 2010]]);
+    expect([...m.entries()]).toEqual([['BidCos-RF', 2001], ['HmIP-RF', 2010], ['VirtualDevices', 9292]]);
   });
 });
 
@@ -428,5 +436,67 @@ describe('CcuClient XML-RPC transport security', () => {
     await ccu.start();
     await ccu.stop();
     expect(warns).toEqual([]);
+  });
+});
+
+describe('CcuClient log hygiene', () => {
+  function make(over: Record<string, unknown>): CcuClient {
+    const config = resolveConfig({
+      platform: 'HomematicHap',
+      ccuIp: '10.0.0.2',
+      eventServer: { host: '127.0.0.1', port: 9876 },
+      interfaces: { bidcosRf: true, hmIpRf: true, bidcosWired: false, virtualDevices: false, cuxd: false },
+      ...over,
+    } as never);
+    return new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'lc-hyg') });
+  }
+  const spyLevel = (ccu: CcuClient, level: 'info' | 'warn' | 'debug'): string[] => {
+    const out: string[] = [];
+    vi.spyOn(ccu['log'] as unknown as Record<string, (...a: unknown[]) => void>, level)
+      .mockImplementation((fmt: string, ...args: unknown[]) => { out.push([fmt, ...args].map(String).join(' ')); });
+    return out;
+  };
+
+  it('unrouted events log at debug only and never print IP_ADDRESS values', () => {
+    const ccu = make({});
+    const info = spyLevel(ccu, 'info');
+    const debug = spyLevel(ccu, 'debug');
+    const handle = (ccu as unknown as { handleEvent(e: unknown): void }).handleEvent.bind(ccu);
+    handle({ channelAddress: 'DEV0001:0', datapoint: 'RSSI_DEVICE', value: -60, receivedAt: 1 });
+    handle({ channelAddress: 'DEV0001:0', datapoint: 'IP_ADDRESS', value: 'SECRET-VALUE', receivedAt: 2 });
+    expect(info).toHaveLength(0);
+    expect(debug.join('\n')).toContain('DEV0001:0.RSSI_DEVICE -60');
+    expect(debug.join('\n')).not.toMatch(/IP_ADDRESS|SECRET-VALUE/);
+  });
+
+  it('TLS credentials refusal: one subscribe warning per start, not per interface', async () => {
+    const ccu = make({});
+    const warns = spyLevel(ccu, 'warn');
+    vi.spyOn(ccu.api, 'listInterfaces').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'listDevices').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'logout').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    vi.spyOn(RpcClient.prototype, 'subscribe').mockRejectedValue(new Error(TLS_CREDENTIALS_REFUSED));
+    await ccu.start();
+    await ccu.stop();
+    expect(warns.filter((w) => w.startsWith('Could not subscribe'))).toHaveLength(1);
+    await ccu.start();
+    await ccu.stop();
+    expect(warns.filter((w) => w.startsWith('Could not subscribe'))).toHaveLength(2);
+  });
+
+  it('other subscribe failures are still reported per interface', async () => {
+    const ccu = make({});
+    const warns = spyLevel(ccu, 'warn');
+    vi.spyOn(ccu.api, 'listInterfaces').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'listDevices').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'logout').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    vi.spyOn(RpcClient.prototype, 'subscribe').mockRejectedValue(new Error('boom'));
+    await ccu.start();
+    await ccu.stop();
+    expect(warns.filter((w) => w.startsWith('Could not subscribe'))).toHaveLength(2);
   });
 });

@@ -3,9 +3,10 @@
  * Print the SHA-256 fingerprint of the CCU's TLS certificate, for the
  * plugin setting `tlsCertFingerprint`. Needs only Node (no openssl).
  *
- *   node ccu-cert-fingerprint.mjs <ccu-host> [port]
+ *   node ccu-cert-fingerprint.mjs <ccu-host> [port] [--verbose]
  *
- * Port defaults to 42001 (BidCos-RF XML-RPC over TLS). A CCU serves the
+ * Prints only the fingerprint line; --verbose adds subject, issuer and
+ * expiry. Port defaults to 42001 (BidCos-RF XML-RPC over TLS). A CCU serves the
  * same certificate on 443, 42001, 42010 and 49292; compare two ports if in
  * doubt. Run it on a trusted network: it accepts whatever certificate it
  * is shown, which is the point of reading the fingerprint once.
@@ -22,11 +23,13 @@ const TIMEOUT_MS = 10_000;
 
 function usage(message) {
   if (message) err(message);
-  err('usage: node ccu-cert-fingerprint.mjs <ccu-host> [port]');
+  err('usage: node ccu-cert-fingerprint.mjs <ccu-host> [port] [--verbose]');
   process.exit(2);
 }
 
-const [host, portArg = '42001'] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const verbose = args.includes('--verbose');
+const [host, portArg = '42001'] = args.filter((a) => a !== '--verbose');
 if (!host || host.startsWith('-')) usage();
 const port = Number(portArg);
 if (!Number.isInteger(port) || port < 1 || port > 65535) usage(`invalid port: ${portArg}`);
@@ -50,7 +53,7 @@ socket.once('secureConnect', () => {
     process.exit(1);
   }
   out(`tlsCertFingerprint: ${cert.fingerprint256}`);
-  out(`subject CN: ${cert.subject?.CN ?? '?'}; issuer CN: ${cert.issuer?.CN ?? '?'}; valid until: ${cert.valid_to}`);
+  if (verbose) out(`subject CN: ${cert.subject?.CN ?? '?'}; issuer CN: ${cert.issuer?.CN ?? '?'}; valid until: ${cert.valid_to}`);
   socket.end();
 });
 socket.once('error', (e) => {

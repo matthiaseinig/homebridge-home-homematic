@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.7.2
+
+- **Remote CCU without TLS used CCU-internal XML-RPC ports.** The CCU's
+  `Interface.listInterfaces` returns only name, port and info (no url), so
+  the loopback-URL filter never matched and a remote Homebridge subscribed
+  on 32001/32010/39292. For a remote CCU the internal ports are now mapped
+  to the external ones (31999 to 1999, 32000 to 2000, 32001 to 2001,
+  32010 to 2010, 39292 to 9292).
+- **Log hygiene.** Events of unmapped channels are logged at debug level
+  only, and `IP_ADDRESS` values are never logged.
+- `scripts/ccu-cert-fingerprint.mjs` prints only the fingerprint line;
+  subject, issuer and expiry need `--verbose`.
+- When the credentials are refused for TLS, the "Could not subscribe"
+  warning appears once per start instead of once per interface.
+
 ## 1.7.1
 
 - **XML-RPC event subscription on a CCU with authentication enabled.**
