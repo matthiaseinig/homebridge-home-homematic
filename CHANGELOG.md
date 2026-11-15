@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 1.5.0
+
+- **Import with new HomeKit identities.** `hap-homematic-to-config.mjs
+  --new-identities` writes the multi-bridge block with a new identity per
+  bridge (`newIdentity: true`, no transplanted UUIDs or persist files), so
+  the new bridges can be paired while the hap-homematic bridges are still
+  paired and running. Usernames and ports derive from the hap-homematic
+  instance ids and never reuse a hap-homematic username; pins and setup ids
+  are random, and bridges already in the `--base` block keep theirs.
+  `--host-bridge-from-base` keeps the existing child bridge (`_bridge`).
+- **Offline check for new identities.** `iid-check.mjs` now builds
+  new-identity bridges too and reports their accessories and skipped
+  mappings (before, they were not built at all).
 
 - **Blinds report live movement.** Window coverings push every
   intermediate LEVEL as CurrentPosition, keep TargetPosition at the
