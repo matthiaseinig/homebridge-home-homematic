@@ -298,6 +298,7 @@ export class HomematicPlatform implements DynamicPlatformPlugin {
       name: displayName,
       legacyLayout: this.usesLegacyIdentity(mapping.uuidSeed),
     });
+    this.setSerial(accessory, address);
     const ctx: ServiceContext = {
       accessory,
       ccu: this.ccu,
@@ -345,6 +346,7 @@ export class HomematicPlatform implements DynamicPlatformPlugin {
       name: finalName,
       legacyLayout: this.usesLegacyIdentity(seed),
     });
+    this.setSerial(accessory, `var:${variable.id}`);
     const ctx: ServiceContext = {
       accessory,
       ccu: this.ccu,
@@ -371,6 +373,7 @@ export class HomematicPlatform implements DynamicPlatformPlugin {
       service: def.key,
       name: finalName,
     });
+    this.setSerial(accessory, `prog:${name}`);
     const ctx: ServiceContext = {
       accessory,
       ccu: this.ccu,
@@ -452,6 +455,11 @@ export class HomematicPlatform implements DynamicPlatformPlugin {
   private usesLegacyIdentity(uuidSeed: string | undefined): boolean {
     return this.resolved?.hapHomematicIdentity === true
       && typeof uuidSeed === 'string' && uuidSeed.length > 0;
+  }
+
+  /** Accessory Information SerialNumber = the accessory's stable key, so HomeKit does not show the Homebridge default. */
+  private setSerial(accessory: PlatformAccessory<AccessoryContext>, key: string): void {
+    accessory.getService(this.Service.AccessoryInformation)?.setCharacteristic(this.Characteristic.SerialNumber, key);
   }
 
   private getOrCreateAccessory<T extends AccessoryContext>(

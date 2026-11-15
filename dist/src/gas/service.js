@@ -147,6 +147,26 @@ export class GasService {
             return undefined;
         }
     }
+    /**
+     * The channel's VALUES. A sender the CCU has not heard since it started
+     * (RSSI_DEVICE -65535, UNREACH 0) has no value for any datapoint: the CCU
+     * answers every read of the channel with a general error. That is no CCU
+     * failure; it is "no reading yet", and the next telegram ends it.
+     */
+    async readValues() {
+        try {
+            return await this.reader.getValues(this.settings.iface, this.channelAddress);
+        }
+        catch (err) {
+            if (!(err instanceof GasCcuError) || err.kind !== 'protocol' || !/general error/i.test(err.message))
+                throw err;
+            if (!this.warned.has('NOVALUE')) {
+                this.warned.add('NOVALUE');
+                this.log.info('Gas meter: the CCU has no value yet for the gas sensor channel (no telegram received since the CCU started); waiting.');
+            }
+            return undefined;
+        }
+    }
     async poll() {
         const r = this.reading;
         try {
@@ -154,7 +174,7 @@ export class GasService {
             const reachable = unreach === undefined ? undefined : !unreach;
             // A device that does not answer makes getParamset fail with a general
             // error; with UNREACH set the paramset is not requested at all.
-            const values = reachable === false ? undefined : await this.reader.getValues(this.settings.iface, this.channelAddress);
+            const values = reachable === false ? undefined : await this.readValues();
             const lowBattery = reachable === false ? undefined : await this.flag('LOWBAT');
             if (!r.ccuOk && r.lastError !== undefined)
                 this.log.info('Gas meter: CCU readable again.');

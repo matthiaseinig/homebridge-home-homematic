@@ -53,5 +53,7 @@ export declare class HomematicPlatform implements DynamicPlatformPlugin {
      */
     private accessoryUuid;
     private usesLegacyIdentity;
+    /** Accessory Information SerialNumber = the accessory's stable key, so HomeKit does not show the Homebridge default. */
+    private setSerial;
     private getOrCreateAccessory;
 }

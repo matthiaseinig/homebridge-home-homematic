@@ -101,6 +101,7 @@ class AccessoryFactory {
         return {
             name,
             seed: legacy ? m.uuidSeed : `channel:${m.address}`,
+            serial: m.address,
             legacy,
             context: { kind: 'channel', id: m.address, service: def.key, subtype: m.subtype, settings: m.settings, name, legacyLayout: legacy },
             attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach({ ...channel, name, siblings: deviceChannels(this.snapshot.devices, m.address) })),
@@ -118,6 +119,7 @@ class AccessoryFactory {
         return {
             name,
             seed: legacy ? m.uuidSeed : `variable:${m.name}`,
+            serial: `var:${variable.id}`,
             legacy,
             context: { kind: 'variable', id: m.name, service: def.key, subtype: m.subtype, settings: m.settings, name, legacyLayout: legacy },
             attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach(variable)),
@@ -129,6 +131,7 @@ class AccessoryFactory {
         return {
             name,
             seed: `program:${m.name}`,
+            serial: `prog:${m.name}`,
             legacy: false,
             context: { kind: 'program', id: m.name, service: def.key, name },
             attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach(m.name)),
@@ -161,6 +164,7 @@ class AccessoryFactory {
             throw new Error(`accessory UUID already used on this bridge (${p.name})`);
         }
         const accessory = new hap.Accessory(p.name, uuid);
+        accessory.getService(hap.Service.AccessoryInformation)?.setCharacteristic(hap.Characteristic.SerialNumber, p.serial);
         const handle = new BridgedAccessoryHandle(accessory, p.context);
         const handler = p.attach({
             accessory: handle,
