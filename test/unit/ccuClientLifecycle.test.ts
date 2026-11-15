@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CcuClient } from '../../src/ccu/CcuClient.js';
+import { TLS_CREDENTIALS_REFUSED } from '../../src/ccu/ccuTls.js';
 import { resolveConfig } from '../../src/util/config.js';
 import { PrefixedLogger } from '../../src/util/logger.js';
 import { makeLog } from '../helpers/hapStub.js';
@@ -383,6 +384,37 @@ describe('CcuClient XML-RPC transport security', () => {
       await ccu.stop();
     }
     expect(warns.filter((w) => /ccuAuth is set without useTls/.test(w))).toHaveLength(1);
+  });
+
+  it('useTls: the JSON API gets the same certificate agent; none without useTls', () => {
+    const agentOf = (c: CcuClient): unknown => (c.api as unknown as { tlsAgent?: unknown }).tlsAgent;
+    const pinned = client({ ...AUTH, useTls: true, tlsCertFingerprint: FP }).ccu;
+    expect((agentOf(pinned) as { constructor: { name: string } }).constructor.name).toBe('PinnedAgent');
+    const allow = client({ ...AUTH, useTls: true, tlsAllowSelfSigned: true }).ccu;
+    expect((agentOf(allow) as { options: { rejectUnauthorized: boolean } }).options.rejectUnauthorized).toBe(false);
+    expect(agentOf(client(AUTH).ccu)).toBeUndefined();
+  });
+
+  it('useTls without pin or tlsAllowSelfSigned: ccuAuth is never sent over the JSON API, one clear error at start', async () => {
+    const config = resolveConfig({
+      platform: 'HomematicHap', ccuIp: '192.0.2.1', useTls: true, ...AUTH,
+      eventServer: { host: '127.0.0.1', port: 9876 },
+      interfaces: { bidcosRf: false, hmIpRf: false, bidcosWired: false, virtualDevices: false, cuxd: false },
+    } as never);
+    const ccu = new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'lc-refuse') });
+    const errors: string[] = [];
+    vi.spyOn(ccu['log'] as unknown as { error: (...a: unknown[]) => void }, 'error')
+      .mockImplementation((fmt: string) => { errors.push(fmt); });
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    // Real JSON client: the refusing agent fails before any socket is opened.
+    const err = await ccu.api.call('Interface.listInterfaces').catch((e: Error & { cause?: Error }) => e);
+    expect((err as Error & { cause?: Error }).cause?.message).toBe(TLS_CREDENTIALS_REFUSED);
+    for (let i = 0; i < 2; i++) {
+      await ccu.start();
+      await ccu.stop();
+    }
+    expect(errors.filter((e) => e === TLS_CREDENTIALS_REFUSED)).toHaveLength(1);
   });
 
   it('without auth: no credentials and no warning', async () => {

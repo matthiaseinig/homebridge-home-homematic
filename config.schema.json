@@ -51,18 +51,18 @@
         "title": "Use TLS to talk to CCU",
         "type": "boolean",
         "default": false,
-        "description": "Use HTTPS for the JSON API and the TLS XML-RPC ports (42001 / 42010 / 49292), so the ccuAuth credentials never cross the network readable. The XML-RPC ports need tlsCertFingerprint (recommended) or tlsAllowSelfSigned for the CCU's self-signed certificate."
+        "description": "Use HTTPS for the JSON API (443) and the TLS XML-RPC ports (42001 / 42010 / 42000 / 49292), so the ccuAuth credentials never cross the network readable. The CCU's certificate is self-signed: set tlsCertFingerprint (recommended) or tlsAllowSelfSigned. With ccuAuth and neither set, the plugin sends no credentials and logs an error."
       },
       "tlsCertFingerprint": {
         "title": "CCU certificate SHA-256 fingerprint",
         "type": "string",
-        "description": "Pins the CCU's certificate for the TLS XML-RPC ports: only this certificate is accepted. Get it with: openssl s_client -connect <ccu>:42001 </dev/null | openssl x509 -noout -fingerprint -sha256"
+        "description": "SHA-256 fingerprint of the CCU's certificate (colons optional). With useTls only this certificate is accepted, for the JSON API and the TLS XML-RPC ports. Print it on the Homebridge host with: node <plugin dir>/scripts/ccu-cert-fingerprint.mjs <ccu-host>"
       },
       "tlsAllowSelfSigned": {
         "title": "Accept any CCU certificate (no pinning)",
         "type": "boolean",
         "default": false,
-        "description": "Accept any certificate on the TLS XML-RPC ports. Encrypted, but not protected against a man in the middle. Prefer tlsCertFingerprint."
+        "description": "With useTls, accept any certificate for the JSON API and the TLS XML-RPC ports. Encrypted, but not protected against a man in the middle. Prefer tlsCertFingerprint."
       },
       "ccuAuth": {
         "title": "CCU authentication",

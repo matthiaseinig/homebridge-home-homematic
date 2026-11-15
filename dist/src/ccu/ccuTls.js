@@ -7,8 +7,10 @@
  *     a byte of the request (and its Authorization header) is sent.
  *   - `allowSelfSigned` without a fingerprint: any certificate is accepted
  *     (encrypted, but not protected against a man in the middle).
- *   - neither: normal verification against the system CAs, which a
- *     self-signed CCU certificate fails.
+ *   - neither: no connection at all while CCU credentials are configured
+ *     (see TLS_CREDENTIALS_REFUSED); without credentials, normal
+ *     verification against the system CAs.
+ * The same rules apply to the JSON API (443) and the XML-RPC TLS ports.
  */
 import { Agent } from 'node:https';
 import { connect } from 'node:tls';
@@ -48,10 +50,34 @@ class PinnedAgent extends Agent {
         return socket;
     }
 }
-/** The https.Agent for the CCU's TLS XML-RPC ports. */
-export function ccuTlsAgent(opts) {
+export const TLS_CREDENTIALS_REFUSED = 'useTls is on but neither tlsCertFingerprint nor '
+    + 'tlsAllowSelfSigned is set: the CCU certificate cannot be checked, so the ccuAuth '
+    + 'credentials are not sent. Set tlsCertFingerprint (see the README) or tlsAllowSelfSigned.';
+/** True when a TLS connection with CCU credentials must be refused. */
+export function refusesCredentials(opts, withCredentials) {
+    return withCredentials && !opts.fingerprint256 && !opts.allowSelfSigned;
+}
+/** Fails every request before a socket is opened, so nothing is sent. */
+class RefusingAgent extends Agent {
+    createConnection(...[, callback]) {
+        const err = new Error(TLS_CREDENTIALS_REFUSED);
+        if (callback) {
+            callback(err, undefined);
+            return undefined;
+        }
+        throw err;
+    }
+}
+/**
+ * The https.Agent for the CCU's TLS ports (JSON API and XML-RPC).
+ * `withCredentials`: the requests carry ccuAuth credentials.
+ */
+export function ccuTlsAgent(opts, withCredentials = false) {
     if (opts.fingerprint256) {
         return new PinnedAgent(opts.fingerprint256);
+    }
+    if (refusesCredentials(opts, withCredentials)) {
+        return new RefusingAgent();
     }
     return new Agent({ rejectUnauthorized: !opts.allowSelfSigned });
 }

@@ -18,7 +18,9 @@ import type { SlatWriteMode } from '../services/slatWriter.js';
 import { EventServer, type ChannelEvent } from './EventServer.js';
 import { CcuJsonRpcClient } from './CcuJsonRpcClient.js';
 import { RpcClient, INTERFACE_PORTS } from './RpcClient.js';
-import { TLS_INTERFACE_PORTS, type CcuTlsOptions } from './ccuTls.js';
+import {
+  TLS_CREDENTIALS_REFUSED, TLS_INTERFACE_PORTS, ccuTlsAgent, refusesCredentials, type CcuTlsOptions,
+} from './ccuTls.js';
 import type {
   CcuDevice,
   CcuInterfaceId,
@@ -58,6 +60,7 @@ export class CcuClient extends EventEmitter {
   /** ccuAuth credentials: JSON-API login and HTTP Basic on the XML-RPC ports. */
   private readonly auth: { username: string; password: string } | undefined;
   private plainAuthWarned = false;
+  private tlsRefusalLogged = false;
   private watchdogTimer: NodeJS.Timeout | undefined;
   private lastEventAt = 0;
   private started = false;
@@ -74,9 +77,13 @@ export class CcuClient extends EventEmitter {
     this.auth = this.config.ccuAuth.enabled
       ? { username: this.config.ccuAuth.username!, password: this.config.ccuAuth.password! }
       : undefined;
+    // With useTls the JSON API follows the same certificate rules as the
+    // XML-RPC TLS ports (pinned / tlsAllowSelfSigned / refused with credentials),
+    // never an unverified connection that carries the credentials.
     this.api = new CcuJsonRpcClient({
       host: this.config.ccuIp,
       useTls: this.config.useTls,
+      ...(this.config.useTls ? { tlsAgent: ccuTlsAgent(this.tlsOptions(), this.auth !== undefined) } : {}),
       auth: this.auth,
       log: this.log.child('api'),
     });
@@ -100,6 +107,9 @@ export class CcuClient extends EventEmitter {
     await this.eventServer.start();
     if (!this.config.useTls) {
       this.warnPlainAuthOnce();
+    } else if (!this.tlsRefusalLogged && refusesCredentials(this.tlsOptions(), this.auth !== undefined)) {
+      this.tlsRefusalLogged = true;
+      this.log.error(TLS_CREDENTIALS_REFUSED);
     }
 
     // Pull the XML-RPC ports from the CCU. CCU-internal loopback URLs
@@ -184,7 +194,7 @@ export class CcuClient extends EventEmitter {
           port: tlsPort,
           source: override !== undefined ? 'config override' : 'TLS default',
           auth: this.auth,
-          tls: this.config.tls ?? { allowSelfSigned: false },
+          tls: this.tlsOptions(),
         };
       }
       this.log.warn('%s has no TLS XML-RPC port; connecting over plain HTTP without the ccuAuth credentials', id);
@@ -195,6 +205,10 @@ export class CcuClient extends EventEmitter {
       ? 'config override'
       : this.discoveredPorts.has(id) ? 'CCU listInterfaces' : 'built-in default';
     return { port, source, auth: this.auth };
+  }
+
+  private tlsOptions(): CcuTlsOptions {
+    return this.config.tls ?? { allowSelfSigned: false };
   }
 
   private warnPlainAuthOnce(): void {

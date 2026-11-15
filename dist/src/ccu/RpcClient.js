@@ -77,7 +77,7 @@ export class RpcClient {
             host: this.host,
             port: this.port,
             ...(this.auth ? { headers: { Authorization: basicAuthHeader(this.auth) } } : {}),
-            ...(this.tls ? { agent: ccuTlsAgent(this.tls) } : {}),
+            ...(this.tls ? { agent: ccuTlsAgent(this.tls, this.auth !== undefined) } : {}),
         });
         this.transport = {
             call: (method, params) => new Promise((resolve, reject) => {

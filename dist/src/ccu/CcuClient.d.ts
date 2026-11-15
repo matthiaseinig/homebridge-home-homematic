@@ -33,6 +33,7 @@ export declare class CcuClient extends EventEmitter {
     /** ccuAuth credentials: JSON-API login and HTTP Basic on the XML-RPC ports. */
     private readonly auth;
     private plainAuthWarned;
+    private tlsRefusalLogged;
     private watchdogTimer;
     private lastEventAt;
     private started;
@@ -50,6 +51,7 @@ export declare class CcuClient extends EventEmitter {
      * listInterfaces discovery (non-loopback URLs only) > built-in default.
      */
     private rpcEndpoint;
+    private tlsOptions;
     private warnPlainAuthOnce;
     private refreshInterfacePorts;
     private refreshAddressInterfaceMap;

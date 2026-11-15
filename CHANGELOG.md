@@ -14,11 +14,15 @@
   TLS ports (42001 BidCos-RF, 42010 HmIP-RF, 42000 BidCos-Wired, 49292
   VirtualDevices; `interfacePorts` overrides are used as TLS ports), and
   credentials never go over plain HTTP (CUxD has no TLS port and is reached
-  without them). The CCU's self-signed certificate is accepted only with
-  the new `tlsCertFingerprint` (pins exactly that certificate; a different
-  one ends the connection before the request is sent) or
-  `tlsAllowSelfSigned`. With `ccuAuth` and without `useTls`, one warning
-  at start says the credentials cross the network readable.
+  without them). The JSON API over HTTPS follows the same rules (it used
+  to accept any certificate). The CCU's self-signed certificate is
+  accepted only with the new `tlsCertFingerprint` (pins exactly that
+  certificate; a different one ends the connection before the request is
+  sent) or `tlsAllowSelfSigned`; with `ccuAuth` and neither set, no
+  credentials are sent and one error is logged. With `ccuAuth` and without
+  `useTls`, one warning at start says the credentials cross the network
+  readable. New `scripts/ccu-cert-fingerprint.mjs` (shipped in the
+  package) prints the fingerprint with Node only.
 - **External XML-RPC ports for a remote CCU.** `Interface.listInterfaces`
   on a CCU3 / RaspberryMatic reports CCU-internal loopback URLs
   (`127.0.0.1:32001`, `:32010`, `:39292/groups`), which only listen on the

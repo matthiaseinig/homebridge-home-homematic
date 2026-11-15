@@ -12,8 +12,10 @@ import * as https from 'node:https';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as tls from 'node:tls';
+import { fileURLToPath } from 'node:url';
 import { Buffer } from 'node:buffer';
-import { ccuTlsAgent, normalizeFingerprint, TLS_INTERFACE_PORTS } from '../../src/ccu/ccuTls.js';
+import { ccuTlsAgent, normalizeFingerprint, refusesCredentials, TLS_CREDENTIALS_REFUSED, TLS_INTERFACE_PORTS } from '../../src/ccu/ccuTls.js';
+import { CcuJsonRpcClient } from '../../src/ccu/CcuJsonRpcClient.js';
 import { RpcClient, basicAuthHeader } from '../../src/ccu/RpcClient.js';
 import { PrefixedLogger } from '../../src/util/logger.js';
 import { makeLog } from '../helpers/hapStub.js';
@@ -48,6 +50,24 @@ describe('normalizeFingerprint', () => {
   it('verifies certificates unless self-signed is explicitly allowed', () => {
     expect(ccuTlsAgent({ allowSelfSigned: false }).options.rejectUnauthorized).toBe(true);
     expect(ccuTlsAgent({ allowSelfSigned: true }).options.rejectUnauthorized).toBe(false);
+    expect(ccuTlsAgent({ allowSelfSigned: true }, true).options.rejectUnauthorized).toBe(false);
+  });
+
+  it('refuses credentials only when neither a pin nor tlsAllowSelfSigned is set', () => {
+    expect(refusesCredentials({ allowSelfSigned: false }, true)).toBe(true);
+    expect(refusesCredentials({ allowSelfSigned: false }, false)).toBe(false);
+    expect(refusesCredentials({ allowSelfSigned: true }, true)).toBe(false);
+    expect(refusesCredentials({ allowSelfSigned: false, fingerprint256: OTHER_FP }, true)).toBe(false);
+  });
+
+  it('the refusing agent fails a request before any socket is opened', async () => {
+    const err = await new Promise<Error>((resolve) => {
+      const req = https.request({ host: '192.0.2.1', port: 443, method: 'POST', agent: ccuTlsAgent({ allowSelfSigned: false }, true) });
+      req.on('error', resolve);
+      req.on('socket', () => resolve(new Error('a socket was opened')));
+      req.end('{}');
+    });
+    expect(err.message).toBe(TLS_CREDENTIALS_REFUSED);
   });
 });
 
@@ -133,17 +153,77 @@ describe.skipIf(!haveOpenssl())('RpcClient over TLS against a self-signed CCU', 
     expect(plaintext).toEqual([]);
   });
 
-  it('without an explicit option the self-signed certificate is refused, with a hint', async () => {
+  it('without an explicit option and with credentials nothing is sent: one clear refusal', async () => {
     const port = await ccu();
     await expect(client(port, { tls: { allowSelfSigned: false }, auth: AUTH }).subscribe())
+      .rejects.toThrow(TLS_CREDENTIALS_REFUSED);
+    expect(requests).toEqual([]);
+  });
+
+  it('without an explicit option and without credentials the self-signed certificate is refused, with a hint', async () => {
+    const port = await ccu();
+    await expect(client(port, { tls: { allowSelfSigned: false } }).subscribe())
       .rejects.toThrow(/self[- ]signed.*set tlsCertFingerprint to pin it, or tlsAllowSelfSigned/);
     expect(requests).toEqual([]);
+  });
+
+  describe('JSON API over HTTPS uses the same rules', () => {
+    async function jsonCcu(): Promise<{ port: number; bodies: string[] }> {
+      const bodies: string[] = [];
+      server = https.createServer({ key, cert }, (req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
+          bodies.push(body);
+          const method = (JSON.parse(body) as { method: string }).method;
+          res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
+          res.end(JSON.stringify({ version: '1.1', result: method === 'Session.login' ? 'SIDTLS' : 'ok', error: null }));
+        });
+      });
+      await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()));
+      return { port: (server.address() as { port: number }).port, bodies };
+    }
+    const api = (port: number, opts: { allowSelfSigned: boolean; fingerprint256?: string }): CcuJsonRpcClient => new CcuJsonRpcClient({
+      host: '127.0.0.1', port, useTls: true, timeoutMs: 2000, auth: AUTH,
+      tlsAgent: ccuTlsAgent(opts, true), log: new PrefixedLogger(makeLog(), 'json-tls'),
+    });
+
+    it('a pinned certificate carries the login', async () => {
+      const { port, bodies } = await jsonCcu();
+      await expect(api(port, { allowSelfSigned: false, fingerprint256: fingerprint }).call('Anything')).resolves.toBe('ok');
+      expect(bodies.map((b) => (JSON.parse(b) as { method: string }).method)).toEqual(['Session.login', 'Anything']);
+    });
+
+    it('a different certificate never receives the password', async () => {
+      const { port, bodies } = await jsonCcu();
+      await expect(api(port, { allowSelfSigned: false, fingerprint256: OTHER_FP }).call('Anything')).rejects.toThrow();
+      expect(bodies).toEqual([]);
+    });
+
+    it('no pin and no tlsAllowSelfSigned: the login is refused with the clear error, nothing sent', async () => {
+      const { port, bodies } = await jsonCcu();
+      const err = await api(port, { allowSelfSigned: false }).call('Anything').catch((e: Error) => e);
+      expect(String((err as Error & { cause?: Error }).cause?.message ?? (err as Error).message)).toContain(TLS_CREDENTIALS_REFUSED);
+      expect(bodies).toEqual([]);
+    });
   });
 
   it('tlsAllowSelfSigned accepts it', async () => {
     const port = await ccu();
     await client(port, { tls: { allowSelfSigned: true }, auth: AUTH }).subscribe();
     expect(requests).toHaveLength(1);
+  });
+
+  it('scripts/ccu-cert-fingerprint.mjs prints the fingerprint for tlsCertFingerprint', async () => {
+    const port = await ccu();
+    const script = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'ccu-cert-fingerprint.mjs');
+    const { execFile } = await import('node:child_process');
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(process.execPath, [script, '127.0.0.1', String(port)], { timeout: 8000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    });
+    expect(out).toContain(`tlsCertFingerprint: ${fingerprint}`);
+    expect(requests).toEqual([]);
   });
 
   it('sends no Authorization header when no auth is configured', async () => {
