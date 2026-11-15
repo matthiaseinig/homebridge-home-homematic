@@ -7,6 +7,11 @@
  *
  * Services subclass this and implement attach().
  */
+import { toFiniteNumber } from '../util/sanitize.js';
+import { SlatWriter } from './slatWriter.js';
+const HK_TILT_MIN = -90;
+const HK_TILT_MAX = 90;
+const HK_TILT_RANGE = HK_TILT_MAX - HK_TILT_MIN;
 export class AccessoryBase {
     accessory;
     ccu;
@@ -14,6 +19,7 @@ export class AccessoryBase {
     Service;
     Characteristic;
     disposers = [];
+    slatWriter;
     constructor(ctx) {
         this.accessory = ctx.accessory;
         this.ccu = ctx.ccu;
@@ -148,7 +154,54 @@ export class AccessoryBase {
         this.ccu.getValue(deviceAddress, 'LOW_BAT').then(applyLow).catch(() => undefined);
         this.ccu.getValue(deviceAddress, 'OPERATING_VOLTAGE').then(applyVoltage).catch(() => undefined);
     }
+    /**
+     * Add slat tilt to a WindowCovering service: Current/TargetHorizontalTiltAngle
+     * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). Tilt
+     * writes go through a SlatWriter (debounced; mode from the plugin setting
+     * `slatWriteMode`) because HmIP actuators ignore a lone LEVEL_2. Positions
+     * are not touched: the handler writes LEVEL itself. Shared by the slat blind
+     * type and by the normal blind type when its imported `useSlats` setting is on.
+     */
+    attachSlatTilt(service, channelAddress, isMoving) {
+        let currentTilt = 0;
+        let targetTilt = 0;
+        this.slatWriter = new SlatWriter({
+            ccu: this.ccu,
+            address: channelAddress,
+            mode: this.ccu.slatWriteMode,
+            log: this.log,
+            isMoving,
+            onFailure: () => {
+                targetTilt = currentTilt;
+                service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, currentTilt);
+            },
+        });
+        const writer = this.slatWriter;
+        service.getCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle)
+            .setProps({ minValue: HK_TILT_MIN, maxValue: HK_TILT_MAX, minStep: 1 })
+            .onGet(this.wrapGet(() => currentTilt));
+        service.getCharacteristic(this.Characteristic.TargetHorizontalTiltAngle)
+            .setProps({ minValue: HK_TILT_MIN, maxValue: HK_TILT_MAX, minStep: 1 })
+            .onGet(this.wrapGet(() => targetTilt))
+            .onSet(this.wrapSet(async (value) => {
+            targetTilt = value;
+            await writer.setTilt((value - HK_TILT_MIN) / HK_TILT_RANGE);
+        }));
+        // Display only: HmIP reports LEVEL_2 up to 1.01, clamped here and never written back.
+        const apply = (raw) => {
+            const f = toFiniteNumber(raw);
+            if (f === undefined)
+                return;
+            currentTilt = Math.round(HK_TILT_MIN + Math.max(0, Math.min(1, f)) * HK_TILT_RANGE);
+            targetTilt = currentTilt;
+            service.updateCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle, currentTilt);
+            service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, targetTilt);
+        };
+        this.registerListener(channelAddress, 'LEVEL_2', apply);
+        this.ccu.getValue(channelAddress, 'LEVEL_2').then(apply).catch(() => undefined);
+    }
     dispose() {
+        this.slatWriter?.dispose();
         while (this.disposers.length > 0) {
             const fn = this.disposers.pop();
             try {

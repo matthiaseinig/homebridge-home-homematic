@@ -183,6 +183,226 @@ describe('hap-homematic-to-config.mjs --new-identities', () => {
   });
 });
 
+describe('hap-homematic-to-config.mjs --new-identities hardening', () => {
+  type Entry = { name: string; username: string; pincode: string; port: number; enabled: boolean; [k: string]: unknown };
+  const importer = path.join(root, 'dist', 'src', 'import', 'HapHomematicImporter.js');
+  const identityFor = async (seed: string): Promise<{ username: string; port: number }> =>
+    (await import(importer)).bridgeIdentityFor(seed);
+  const writeTar = async (name: string, config: object): Promise<string> => {
+    const d = path.join(dir, name);
+    await fs.mkdir(d);
+    await fs.writeFile(path.join(d, 'config.json'), JSON.stringify(config));
+    await fs.writeFile(path.join(d, 'devices.json'), JSON.stringify(DEVICES));
+    const file = path.join(dir, `${name}.tar.gz`);
+    await tarCreate({ gzip: true, file, cwd: d }, ['./config.json', './devices.json']);
+    return file;
+  };
+  const genWith = (tar: string, args: string[]) =>
+    spawnSync(process.execPath, [GEN, tar, '--ccu-ip', '10.0.0.2', '--new-identities', ...args], { encoding: 'utf8' });
+  const bridgesOf = async (out: string): Promise<Entry[]> => (await readJson(out))[0].multiBridge.bridges;
+
+  it('walks the username-collision loop until the username is free', async () => {
+    const a = await identityFor(INST_A);
+    const a1 = await identityFor(`${INST_A}:1`);
+    const config = {
+      ...CONFIG,
+      instances: {
+        ...CONFIG.instances,
+        [INST_A]: { ...CONFIG.instances[INST_A], user: a.username },
+        [INST_B]: { ...CONFIG.instances[INST_B], user: a1.username },
+      },
+    };
+    const out = path.join(dir, 'collide.json');
+    const r = genWith(await writeTar('collide', config), ['--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    const [first] = await bridgesOf(out);
+    const a2 = await identityFor(`${INST_A}:2`);
+    expect(first!.username).toBe(a2.username);
+    expect([a.username, a1.username]).not.toContain(first!.username);
+  });
+
+  it('bumps a port that is taken by the event server, and keeps going', async () => {
+    const a = await identityFor(INST_A);
+    const out = path.join(dir, 'bump.json');
+    const r = gen(['--new-identities', '--event-port-base', String(a.port), '--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    const [first] = await bridgesOf(out);
+    expect(first!.port).toBeGreaterThan(a.port);
+    expect(first!.port).not.toBe(a.port);
+  });
+
+  it('reserves the ports of kept bridges before assigning new ones, so a kept bridge never moves', async () => {
+    const first = path.join(dir, 'kept-1.json');
+    expect(gen(['--new-identities', '--out', first]).status).toBe(0);
+    const base = (await readJson(first))[0];
+    const [keptA, keptB] = base.multiBridge.bridges as Entry[];
+    // Only bridge B is in --base, and it sits on the port bridge A would get.
+    const aPort = (await identityFor(INST_A)).port;
+    keptB!.port = aPort;
+    base.multiBridge.bridges = [keptB];
+    const baseFile = path.join(dir, 'kept-base.json');
+    await fs.writeFile(baseFile, JSON.stringify(base));
+    const out = path.join(dir, 'kept-2.json');
+    const r = gen(['--new-identities', '--base', baseFile, '--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    const [a, b] = await bridgesOf(out);
+    expect(b!.port).toBe(aPort);
+    expect(b!.username).toBe(keptB!.username);
+    expect(a!.port).not.toBe(aPort);
+    expect(keptA).toBeDefined();
+  });
+
+  it('avoids ports of other child bridges from --reserve-ports and from a full config', async () => {
+    const a = await identityFor(INST_A);
+    const b = await identityFor(INST_B);
+    const out1 = path.join(dir, 'res-1.json');
+    const r1 = gen(['--new-identities', '--reserve-ports', `${a.port},${b.port}`, '--out', out1]);
+    expect(r1.status, r1.stderr).toBe(0);
+    const ports1 = (await bridgesOf(out1)).map((x) => x.port);
+    expect(ports1).not.toContain(a.port);
+    expect(ports1).not.toContain(b.port);
+
+    const full = {
+      bridge: { name: 'Homebridge', port: a.port },
+      platforms: [
+        { platform: 'HomematicHap', name: 'HomeMatic Bridges', ccuIp: '10.0.0.9', _bridge: { name: 'x', username: '0E:00:00:00:00:01', port: 36001 } },
+        { platform: 'Other', name: 'Other', _bridge: { name: 'o', username: '0E:00:00:00:00:02', port: b.port } },
+      ],
+    };
+    const fullFile = path.join(dir, 'full-config.json');
+    await fs.writeFile(fullFile, JSON.stringify(full));
+    const out2 = path.join(dir, 'res-2.json');
+    const r2 = spawnSync(process.execPath, [GEN, tarball, '--new-identities', '--base', fullFile, '--out', out2], { encoding: 'utf8' });
+    expect(r2.status, r2.stderr).toBe(0);
+    const block = (await readJson(out2))[0];
+    expect(block.ccuIp).toBe('10.0.0.9');
+    const ports2 = block.multiBridge.bridges.map((x: Entry) => x.port);
+    expect(ports2).not.toContain(a.port);
+    expect(ports2).not.toContain(b.port);
+    expect(gen(['--new-identities', '--reserve-ports', '99999']).stderr).toMatch(/--reserve-ports/);
+    expect(gen(['--reserve-ports', '9000']).stderr).toMatch(/need --new-identities/);
+  });
+
+  it('warns and disables a bridge whose base username is discarded, unless --keep-enabled', async () => {
+    const first = path.join(dir, 'disc-1.json');
+    expect(gen(['--new-identities', '--out', first]).status).toBe(0);
+    const base = (await readJson(first))[0];
+    const [entA, entB] = base.multiBridge.bridges as Entry[];
+    entA!.enabled = true;
+    entB!.enabled = true;
+    entA!.username = CONFIG.instances[INST_A].user; // an old hap-homematic username
+    const baseFile = path.join(dir, 'disc-base.json');
+    await fs.writeFile(baseFile, JSON.stringify(base));
+
+    const out = path.join(dir, 'disc-2.json');
+    const r = gen(['--new-identities', '--base', baseFile, '--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/bridge "HomeMatic Room A".*discarded.*hap-homematic username.*port derived for it.*new pairing.*disabled/);
+    expect(r.stderr).not.toMatch(/Room B/);
+    expect(r.stderr).not.toMatch(/\d{3}-\d{2}-\d{3}/);
+    const bridges = await bridgesOf(out);
+    expect(bridges.map((x) => x.enabled)).toEqual([false, true]);
+    expect(bridges[0]!.username).not.toBe(CONFIG.instances[INST_A].user);
+
+    const out2 = path.join(dir, 'disc-3.json');
+    const r2 = gen(['--new-identities', '--base', baseFile, '--keep-enabled', '--out', out2]);
+    expect(r2.status, r2.stderr).toBe(0);
+    expect(r2.stderr).toMatch(/discarded/);
+    expect((await bridgesOf(out2)).map((x) => x.enabled)).toEqual([true, true]);
+  });
+
+  it('a missing pin or newIdentity=false renews only pin and setup id; username, port and enabled stay', async () => {
+    const first = path.join(dir, 'part-1.json');
+    expect(gen(['--new-identities', '--out', first]).status).toBe(0);
+    const base = (await readJson(first))[0];
+    const [entA, entB] = base.multiBridge.bridges as Entry[];
+    entA!.enabled = true;
+    entB!.enabled = true;
+    delete entA!.pincode;
+    entB!.newIdentity = false;
+    const baseFile = path.join(dir, 'part-base.json');
+    await fs.writeFile(baseFile, JSON.stringify(base));
+    const out = path.join(dir, 'part-2.json');
+    const r = gen(['--new-identities', '--base', baseFile, '--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/bridge "HomeMatic Room A".*incomplete.*no pin.*username and port stay.*only the pin and setup id are new/);
+    expect(r.stderr).toMatch(/bridge "HomeMatic Room B".*not a new-identity bridge/);
+    expect(r.stderr).not.toMatch(/disabled|discarded/);
+    const bridges = await bridgesOf(out);
+    expect(bridges.map((x) => [x.username, x.port, x.enabled])).toEqual([entA, entB].map((x) => [x!.username, x!.port, true]));
+    expect(bridges.map((x) => x.pincode)).not.toContain(entB!.pincode);
+    expect(bridges[0]!.pincode).toMatch(/^\d{3}-\d{2}-\d{3}$/);
+  });
+
+  it('takes this tool\'s own --out file (an array) as --base and changes nothing', async () => {
+    const first = path.join(dir, 'self-1.json');
+    expect(gen(['--new-identities', '--enable', 'Room_A', '--out', first]).status).toBe(0);
+    const out = path.join(dir, 'self-2.json');
+    const r = gen(['--new-identities', '--base', first, '--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).not.toMatch(/warning/);
+    expect(await bridgesOf(out)).toEqual(await bridgesOf(first));
+  });
+
+  it('fails loudly when --base has no HomematicHap block', async () => {
+    const files: Array<[string, unknown]> = [
+      ['nob-1.json', { platforms: [{ platform: 'Other', name: 'x' }] }],
+      ['nob-2.json', [{ platform: 'Other' }]],
+      ['nob-3.json', { foo: 1 }],
+    ];
+    for (const [name, content] of files) {
+      const f = path.join(dir, name);
+      await fs.writeFile(f, JSON.stringify(content));
+      const r = gen(['--new-identities', '--base', f, '--out', path.join(dir, 'nob-out.json')]);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/no HomematicHap platform block/);
+    }
+  });
+
+  it('warns when a kept bridge sits on the port of another child bridge, and does not move it', async () => {
+    const first = path.join(dir, 'conf-1.json');
+    expect(gen(['--new-identities', '--out', first]).status).toBe(0);
+    const block = (await readJson(first))[0];
+    const keptPort = (block.multiBridge.bridges as Entry[])[0]!.port;
+    const full = {
+      bridge: { name: 'Homebridge', port: 51826 },
+      platforms: [block, { platform: 'Other', name: 'Other', _bridge: { name: 'o', username: '0E:00:00:00:00:02', port: keptPort } }],
+    };
+    const fullFile = path.join(dir, 'conf-full.json');
+    await fs.writeFile(fullFile, JSON.stringify(full));
+    const out = path.join(dir, 'conf-2.json');
+    const r = gen(['--new-identities', '--base', fullFile, '--out', out]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(new RegExp(`bridge "HomeMatic Room A".*port ${keptPort}.*another child bridge`));
+    expect((await bridgesOf(out))[0]!.port).toBe(keptPort);
+  });
+
+  it('warns when a kept port equals the event server port, the host port or another kept bridge', async () => {
+    const first = path.join(dir, 'kp-1.json');
+    expect(gen(['--new-identities', '--out', first]).status).toBe(0);
+    const block = (await readJson(first))[0];
+    const [a, b] = block.multiBridge.bridges as Entry[];
+    a!.port = 9875; // default event server port
+    b!.port = block._bridge.port; // host bridge port
+    const f1 = path.join(dir, 'kp-base-1.json');
+    await fs.writeFile(f1, JSON.stringify(block));
+    const r1 = gen(['--new-identities', '--base', f1, '--host-bridge-from-base', '--out', path.join(dir, 'kp-2.json')]);
+    expect(r1.status, r1.stderr).toBe(0);
+    expect(r1.stderr).toMatch(/bridge "HomeMatic Room A".*port 9875.*the event server port/);
+    expect(r1.stderr).toMatch(/bridge "HomeMatic Room B".*the host bridge port/);
+
+    b!.port = 40123;
+    a!.port = 40123;
+    const f2 = path.join(dir, 'kp-base-2.json');
+    await fs.writeFile(f2, JSON.stringify(block));
+    const r2 = gen(['--new-identities', '--base', f2, '--out', path.join(dir, 'kp-3.json')]);
+    expect(r2.status, r2.stderr).toBe(0);
+    expect(r2.stderr).toMatch(/bridge "HomeMatic Room A".*port 40123.*another kept bridge/);
+    expect(r2.stderr).toMatch(/bridge "HomeMatic Room B".*port 40123.*another kept bridge/);
+    expect((await bridgesOf(path.join(dir, 'kp-3.json'))).map((x) => x.port)).toEqual([40123, 40123]);
+  });
+});
+
 describe('iid-check.mjs on new identities', () => {
   it('builds new-identity bridges offline and reports their accessories', async () => {
     const out = path.join(dir, 'iid-new.json');

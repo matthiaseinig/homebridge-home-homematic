@@ -30,6 +30,12 @@ describe('resolveConfig', () => {
     expect(c.ccuAuth.enabled).toBe(false);
   });
 
+  it('defaults slatWriteMode to combined and rejects unknown modes', () => {
+    expect(resolveConfig(base).slatWriteMode).toBe('combined');
+    expect(resolveConfig({ ...base, slatWriteMode: 'level2' }).slatWriteMode).toBe('level2');
+    expect(() => resolveConfig({ ...base, slatWriteMode: 'nope' })).toThrow(/slatWriteMode/);
+  });
+
   it('rejects empty config', () => {
     expect(() => resolveConfig(null as never)).toThrow(ConfigError);
   });

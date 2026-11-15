@@ -25,6 +25,9 @@ const FAILSAFE_MS = 120000;
  *   (target reached, CCU reports stable, or the level stops changing); a
  *   move stopped midway then sets target = current. Moves started outside
  *   HomeKit (wall button) have no known target, so target follows current.
+ * - With the imported setting `useSlats` the service also gets slat tilt
+ *   (CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle <-> LEVEL_2),
+ *   shared with the slat blind type.
  * HomeKit 100 equals CCU LEVEL 1.0 (open); no inversion is applied.
  */
 class BlindHandler extends AccessoryBase {
@@ -91,6 +94,18 @@ class BlindHandler extends AccessoryBase {
                 }
             }
         });
+        // Imported hap-homematic setting: the blind has slats, so add tilt (LEVEL_2).
+        if (this.accessory.context?.settings?.useSlats === true) {
+            this.attachSlatTilt(service, this.channelAddress, () => this.positionState() !== STATE_STOPPED);
+        }
+        else {
+            // A cached accessory may still carry tilt from when useSlats was on.
+            for (const tilt of [this.Characteristic.CurrentHorizontalTiltAngle, this.Characteristic.TargetHorizontalTiltAngle]) {
+                if (service.testCharacteristic(tilt)) {
+                    service.removeCharacteristic(service.getCharacteristic(tilt));
+                }
+            }
+        }
         // Pull initial position. Without this, the accessory shows 0 (closed)
         // until the next CCU push event arrives, which for blinds may be
         // hours away. Best-effort; we ignore errors so a missing-channel

@@ -7,6 +7,7 @@
  * configured").
  */
 import { resolveMultiBridgeConfig } from '../multiBridge/config.js';
+import { DEFAULT_SLAT_WRITE_MODE, SLAT_WRITE_MODES } from '../services/slatWriter.js';
 export class ConfigError extends Error {
     constructor(message) {
         super(message);
@@ -67,6 +68,10 @@ export function resolveConfig(raw) {
     if (!Number.isInteger(evWatchdog) || evWatchdog < 30 || evWatchdog > 3600) {
         throw new ConfigError('eventServer.watchdogSeconds must be an integer in [30, 3600]');
     }
+    const slatWriteMode = (raw.slatWriteMode ?? DEFAULT_SLAT_WRITE_MODE);
+    if (!SLAT_WRITE_MODES.includes(slatWriteMode)) {
+        throw new ConfigError(`slatWriteMode must be one of: ${SLAT_WRITE_MODES.join(', ')}`);
+    }
     const channels = Array.isArray(raw.channels) ? raw.channels.filter(Boolean) : [];
     const variables = Array.isArray(raw.variables) ? raw.variables.filter(Boolean) : [];
     const programs = Array.isArray(raw.programs) ? raw.programs.filter(Boolean) : [];
@@ -94,6 +99,7 @@ export function resolveConfig(raw) {
         useTls,
         ccuAuth,
         eventServer: { host: evHost, port: evPort, watchdogSeconds: evWatchdog },
+        slatWriteMode,
         channels,
         variables,
         programs,

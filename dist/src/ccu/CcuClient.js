@@ -231,6 +231,10 @@ export class CcuClient extends EventEmitter {
         }
         return false;
     }
+    /** Plugin setting `slatWriteMode`: how blind position and slat tilt are written. */
+    get slatWriteMode() {
+        return this.config.slatWriteMode;
+    }
     /**
      * Set a CCU datapoint via XML-RPC (the event-plane interface client).
      * setValue HAS to go through XML-RPC because that's the path the CCU

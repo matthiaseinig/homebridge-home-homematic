@@ -172,9 +172,19 @@ Rules that keep this safe:
   (hap-homematic re-created an accessory on rename). Moving a channel to
   another bridge does create a new accessory.
 - Characteristics this plugin does not implement disappear from the
-  accessory (for example ObstructionDetected and slat tilt on blinds, Eve
-  history on window contacts, OutletInUse). Automations that use them
-  need adjusting.
+  accessory (for example ObstructionDetected on blinds, Eve history on
+  window contacts, OutletInUse). Automations that use them need adjusting.
+- Slat tilt is kept: a blind imported with `useSlats: true` uses the normal
+  blind type (live movement reporting) plus
+  CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle, mapped to the
+  HmIP `LEVEL_2` datapoint (-90..90 degrees to 0..1) like the slat blind
+  type. Positions are plain `LEVEL` writes at once. HmIP actuators ignore a
+  lone `LEVEL_2`, so tilt (debounced, about 1 s) is sent as one
+  `COMBINED_PARAMETER` write `L2=<pct>` by default. The plugin setting
+  `slatWriteMode` (`combined`, `level2-then-stop`, `level2`) changes that;
+  test one blind
+  first, see the README. Blinds without `useSlats` get no tilt (a tilt left
+  on a cached accessory is removed).
 
 ### Multi-bridge mode (one process for all bridges)
 
@@ -263,13 +273,36 @@ node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport" ...
   same on every run, never one of the hap-homematic usernames); pin and
   setupID are random. A bridge already present in the `--base` block
   keeps its username, pin, setupID, port and enabled state, so re-running
-  the import does not invalidate a pairing.
+  the import does not invalidate a pairing. The ports of all kept bridges
+  are reserved before any new port is assigned, so a kept bridge never
+  moves.
 - `--host-bridge-from-base` keeps the `--base` block's `_bridge`, so the
   existing Homebridge child bridge keeps its identity and can be restarted
   on its own.
-- Pair each bridge in the Home app (the pin is in the block's
-  `multiBridge.bridges[].pincode`), then remove the matching hap-homematic
-  bridge from the Home app, so no device shows up twice.
+- Ports of other Homebridge child bridges are avoided. Pass the full
+  Homebridge `config.json` as `--base` (the HomematicHap block is used for
+  the CCU settings; every other `_bridge.port`, the main bridge port and
+  the bridge ports of other HomematicHap blocks are reserved), or list them
+  with `--reserve-ports 36001,36002` (repeatable, also adds to the ports
+  read from a full config). The event server port and the host bridge port
+  are always avoided too. A kept bridge never moves; if its port is also
+  the event server port, the host bridge port, another child bridge's port or
+  another kept bridge's port, the tool warns and leaves it.
+- `--base` may be a full Homebridge `config.json`, the array this tool wrote
+  with `--out` (so a re-run on its own output changes nothing), or one
+  block. If it holds no HomematicHap block the tool fails with an error
+  instead of resetting identities.
+- A `--base` identity that cannot be kept fully is handled by what is
+  missing; the tool prints a warning naming the bridge (no secrets):
+  - **Username unusable** (missing, or an old hap-homematic username): the
+    username, pin and setup id are new and the port is the one derived for
+    it (not the one in `--base`), so the bridge needs a new pairing. It is listed `enabled: false` so it is not published unasked;
+    `--keep-enabled` keeps its enabled state (`--enable` or enabled in
+    `--base`).
+  - **Username usable but the pin is missing, no port, or the entry is not a
+    `newIdentity` bridge**: only the pin and setup id are new (and a port is
+    assigned if there was none). Username and port stay, HomeKit pairs by
+    username, and the enabled state is kept.
 
 ## What the importer does NOT do
 

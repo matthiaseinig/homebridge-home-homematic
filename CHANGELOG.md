@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.6.0
+
+- **Slat tilt on normal blinds.** A blind imported with `useSlats: true`
+  keeps the normal blind type (live movement reporting) and now also gets
+  CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle, mapped to the
+  HmIP `LEVEL_2` datapoint exactly like the slat blind type (shared code).
+  Without `useSlats` nothing changes (tilt left on a cached accessory is
+  removed).
+- **Slat tilt writes that HmIP actuators accept.** A lone `LEVEL_2` is
+  ignored by HmIP blind actuators, so tilt is debounced (about 1 s, last
+  value wins) and written as one `COMBINED_PARAMETER` `L2=<pct>` (no `L=`:
+  only the slats change, the blind never moves). Positions are unchanged
+  from 1.5.0: plain `LEVEL`, at once. New plugin setting `slatWriteMode`:
+  `combined` (default), `level2-then-stop` (opt-in; STOP only when the blind
+  is not moving), `level2` (legacy). A failed tilt write is logged once per
+  accessory, resets HomeKit's target tilt and is never replayed. Reported
+  `LEVEL_2` above 1 is clamped for display only. Test one blind and switch
+  the mode if needed (README).
+- **Import converter hardening** (`--new-identities`): the ports of bridges
+  kept from `--base` are reserved before new ports are assigned, so a kept
+  bridge never moves; ports of other Homebridge child bridges are avoided
+  (read from a full `config.json` passed as `--base`, or `--reserve-ports`);
+  a bridge whose `--base` identity has to be discarded (old hap-homematic
+  username, missing pin, username or port) prints a warning and is listed
+  disabled unless `--keep-enabled`. If only the pin or `newIdentity` is
+  missing, the username and port stay, only pin and setup id are renewed and
+  the bridge is not disabled. `--base` also accepts the converter's own
+  `--out` array and fails when no HomematicHap block is found. A kept
+  bridge on the event server port, the host port or another bridge's port
+  is warned about and does not move.
+
 ## 1.5.0
 
 - **Import with new HomeKit identities.** `hap-homematic-to-config.mjs

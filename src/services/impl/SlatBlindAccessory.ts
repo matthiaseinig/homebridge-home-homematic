@@ -1,7 +1,7 @@
 import { AccessoryBase } from '../AccessoryBase.js';
 import type { ChannelService, ServiceContext, ServiceDefinition } from '../types.js';
 import type { CcuChannel } from '../../types.js';
-import { normalizeLevelToPercent, percentToLevelFraction, toFiniteNumber } from '../../util/sanitize.js';
+import { normalizeLevelToPercent, percentToLevelFraction } from '../../util/sanitize.js';
 
 /**
  * Window covering with adjustable slat angle (venetian blind / HmIP-BBL).
@@ -18,16 +18,10 @@ const STATE_STOPPED = 2;
 const STATE_INCREASING = 1;
 const STATE_DECREASING = 0;
 
-const HK_TILT_MIN = -90;
-const HK_TILT_MAX = 90;
-const HK_TILT_RANGE = HK_TILT_MAX - HK_TILT_MIN;
-
 class SlatBlindHandler extends AccessoryBase implements ChannelService {
   private channelAddress = '';
   private current = 0;
   private target = 0;
-  private currentTilt = 0;
-  private targetTilt = 0;
 
   attach(channel: CcuChannel): void {
     this.channelAddress = channel.address;
@@ -47,18 +41,7 @@ class SlatBlindHandler extends AccessoryBase implements ChannelService {
     service.getCharacteristic(this.Characteristic.PositionState)
       .onGet(this.wrapGet<number>(() => this.derivePositionState()));
 
-    service.getCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle)
-      .setProps({ minValue: HK_TILT_MIN, maxValue: HK_TILT_MAX, minStep: 1 })
-      .onGet(this.wrapGet<number>(() => this.currentTilt));
-
-    service.getCharacteristic(this.Characteristic.TargetHorizontalTiltAngle)
-      .setProps({ minValue: HK_TILT_MIN, maxValue: HK_TILT_MAX, minStep: 1 })
-      .onGet(this.wrapGet<number>(() => this.targetTilt))
-      .onSet(this.wrapSet<number>(async (value) => {
-        this.targetTilt = value;
-        const fraction = (value - HK_TILT_MIN) / HK_TILT_RANGE;
-        await this.ccu.setValue(this.channelAddress, 'LEVEL_2', fraction);
-      }));
+    this.attachSlatTilt(service, this.channelAddress, () => this.derivePositionState() !== STATE_STOPPED);
 
     this.registerListener(this.channelAddress, 'LEVEL', (raw) => {
       const pct = normalizeLevelToPercent(raw);
@@ -70,16 +53,6 @@ class SlatBlindHandler extends AccessoryBase implements ChannelService {
       service.updateCharacteristic(this.Characteristic.PositionState, this.derivePositionState());
     });
 
-    this.registerListener(this.channelAddress, 'LEVEL_2', (raw) => {
-      const f = toFiniteNumber(raw);
-      if (f === undefined) return;
-      const angle = HK_TILT_MIN + Math.max(0, Math.min(1, f)) * HK_TILT_RANGE;
-      this.currentTilt = Math.round(angle);
-      this.targetTilt = this.currentTilt;
-      service.updateCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle, this.currentTilt);
-      service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, this.targetTilt);
-    });
-
     this.registerListener(this.channelAddress, 'WORKING', (raw) => {
       const moving = Boolean(raw);
       service.updateCharacteristic(
@@ -88,8 +61,8 @@ class SlatBlindHandler extends AccessoryBase implements ChannelService {
       );
     });
 
-    // Best-effort initial pulls — same apply paths as the LEVEL /
-    // LEVEL_2 listeners above; tested via fireEvent there.
+    // Best-effort initial pulls, same apply path as the LEVEL
+    // listener above; tested via fireEvent there. LEVEL_2 is in attachSlatTilt.
     /* v8 ignore start */
     this.ccu.getValue(this.channelAddress, 'LEVEL').then((raw) => {
       const pct = normalizeLevelToPercent(raw);
@@ -99,16 +72,6 @@ class SlatBlindHandler extends AccessoryBase implements ChannelService {
       service.updateCharacteristic(this.Characteristic.CurrentPosition, pct);
       service.updateCharacteristic(this.Characteristic.TargetPosition, pct);
       service.updateCharacteristic(this.Characteristic.PositionState, STATE_STOPPED);
-    }).catch(() => undefined);
-
-    this.ccu.getValue(this.channelAddress, 'LEVEL_2').then((raw) => {
-      const f = toFiniteNumber(raw);
-      if (f === undefined) return;
-      const angle = HK_TILT_MIN + Math.max(0, Math.min(1, f)) * HK_TILT_RANGE;
-      this.currentTilt = Math.round(angle);
-      this.targetTilt = this.currentTilt;
-      service.updateCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle, this.currentTilt);
-      service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, this.targetTilt);
     }).catch(() => undefined);
     /* v8 ignore stop */
   }

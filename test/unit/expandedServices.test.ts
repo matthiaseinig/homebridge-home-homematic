@@ -328,15 +328,22 @@ describe('SlatBlindAccessory', () => {
     address: 'HmIP.S:4', name: 'Slats', index: 4, type: 'BLIND_VIRTUAL_RECEIVER',
   };
 
-  it('writes LEVEL_2 for tilt angle, mapped from -90..90 to 0..1', async () => {
-    const env = makeEnv();
-    const { ctx, accessory } = buildCtx(env, { kind: 'channel', id: channel.address, service: 'SlatBlindAccessory' });
-    slatBlindService.build(ctx).attach(channel);
-    const target = accessory.services[0]!.characteristics.get('char:TargetHorizontalTiltAngle')!;
-    await target.onSetHandler!(0);
-    expect(env.setValueMock).toHaveBeenCalledWith('HmIP.S:4', 'LEVEL_2', 0.5);
-    await target.onSetHandler!(-90);
-    expect(env.setValueMock).toHaveBeenCalledWith('HmIP.S:4', 'LEVEL_2', 0);
+  it('writes tilt angle -90..90 as 0..100 percent in one debounced COMBINED_PARAMETER (L2 only)', async () => {
+    vi.useFakeTimers();
+    try {
+      const env = makeEnv();
+      const { ctx, accessory } = buildCtx(env, { kind: 'channel', id: channel.address, service: 'SlatBlindAccessory' });
+      slatBlindService.build(ctx).attach(channel);
+      env.fireEvent('HmIP.S:4', 'LEVEL', 0.3);
+      const target = accessory.services[0]!.characteristics.get('char:TargetHorizontalTiltAngle')!;
+      await target.onSetHandler!(-90);
+      await target.onSetHandler!(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(env.setValueMock).toHaveBeenCalledTimes(1);
+      expect(env.setValueMock).toHaveBeenCalledWith('HmIP.S:4', 'COMBINED_PARAMETER', 'L2=50');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reflects LEVEL_2 events as a tilt angle', () => {

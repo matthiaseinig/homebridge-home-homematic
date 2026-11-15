@@ -6,6 +6,7 @@
  */
 
 import type { PlatformConfig } from 'homebridge';
+import type { SlatWriteMode } from './services/slatWriter.js';
 
 export type CcuInterfaceId =
   | 'BidCos-RF'
@@ -44,6 +45,8 @@ export interface ResolvedConfig {
   useTls: boolean;
   ccuAuth: CcuAuthConfig;
   eventServer: EventServerConfig;
+  /** How blind position and slat tilt are written; see services/slatWriter.ts. */
+  slatWriteMode: SlatWriteMode;
   channels: ChannelMapping[];
   variables: VariableMapping[];
   programs: ProgramMapping[];
@@ -174,6 +177,7 @@ export interface RawConfig extends PlatformConfig {
   useTls?: boolean;
   ccuAuth?: Partial<CcuAuthConfig>;
   eventServer?: Partial<EventServerConfig>;
+  slatWriteMode?: string;
   hapHomematicIdentity?: boolean;
   channels?: ChannelMapping[];
   variables?: VariableMapping[];

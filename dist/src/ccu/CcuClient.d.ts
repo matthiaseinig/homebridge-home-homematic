@@ -12,6 +12,7 @@
  * Exactly one CcuClient lives per HomematicPlatform instance.
  */
 import { EventEmitter } from 'node:events';
+import type { SlatWriteMode } from '../services/slatWriter.js';
 import { EventServer } from './EventServer.js';
 import { CcuJsonRpcClient } from './CcuJsonRpcClient.js';
 import type { CcuDevice, CcuInterfaceId, CcuProgram, CcuVariable, ResolvedConfig } from '../types.js';
@@ -54,6 +55,8 @@ export declare class CcuClient extends EventEmitter {
     registerListener(address: string, listener: DatapointListener): () => void;
     /** Returns true if any RPC interface is currently subscribed. */
     isLive(): boolean;
+    /** Plugin setting `slatWriteMode`: how blind position and slat tilt are written. */
+    get slatWriteMode(): SlatWriteMode;
     /**
      * Set a CCU datapoint via XML-RPC (the event-plane interface client).
      * setValue HAS to go through XML-RPC because that's the path the CCU
