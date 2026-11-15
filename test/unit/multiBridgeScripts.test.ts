@@ -297,7 +297,7 @@ describe('hap-homematic-to-config.mjs --new-identities hardening', () => {
     const out = path.join(dir, 'disc-2.json');
     const r = gen(['--new-identities', '--base', baseFile, '--out', out]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stderr).toMatch(/bridge "HomeMatic Room A".*discarded.*hap-homematic username.*new pairing.*disabled/);
+    expect(r.stderr).toMatch(/bridge "HomeMatic Room A".*discarded.*hap-homematic username.*port derived for it.*new pairing.*disabled/);
     expect(r.stderr).not.toMatch(/Room B/);
     expect(r.stderr).not.toMatch(/\d{3}-\d{2}-\d{3}/);
     const bridges = await bridgesOf(out);
@@ -375,6 +375,31 @@ describe('hap-homematic-to-config.mjs --new-identities hardening', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toMatch(new RegExp(`bridge "HomeMatic Room A".*port ${keptPort}.*another child bridge`));
     expect((await bridgesOf(out))[0]!.port).toBe(keptPort);
+  });
+
+  it('warns when a kept port equals the event server port, the host port or another kept bridge', async () => {
+    const first = path.join(dir, 'kp-1.json');
+    expect(gen(['--new-identities', '--out', first]).status).toBe(0);
+    const block = (await readJson(first))[0];
+    const [a, b] = block.multiBridge.bridges as Entry[];
+    a!.port = 9875; // default event server port
+    b!.port = block._bridge.port; // host bridge port
+    const f1 = path.join(dir, 'kp-base-1.json');
+    await fs.writeFile(f1, JSON.stringify(block));
+    const r1 = gen(['--new-identities', '--base', f1, '--host-bridge-from-base', '--out', path.join(dir, 'kp-2.json')]);
+    expect(r1.status, r1.stderr).toBe(0);
+    expect(r1.stderr).toMatch(/bridge "HomeMatic Room A".*port 9875.*the event server port/);
+    expect(r1.stderr).toMatch(/bridge "HomeMatic Room B".*the host bridge port/);
+
+    b!.port = 40123;
+    a!.port = 40123;
+    const f2 = path.join(dir, 'kp-base-2.json');
+    await fs.writeFile(f2, JSON.stringify(block));
+    const r2 = gen(['--new-identities', '--base', f2, '--out', path.join(dir, 'kp-3.json')]);
+    expect(r2.status, r2.stderr).toBe(0);
+    expect(r2.stderr).toMatch(/bridge "HomeMatic Room A".*port 40123.*another kept bridge/);
+    expect(r2.stderr).toMatch(/bridge "HomeMatic Room B".*port 40123.*another kept bridge/);
+    expect((await bridgesOf(path.join(dir, 'kp-3.json'))).map((x) => x.port)).toEqual([40123, 40123]);
   });
 });
 

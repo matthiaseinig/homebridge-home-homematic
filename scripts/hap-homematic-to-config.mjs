@@ -318,19 +318,27 @@ if (multi && opts.newIdentities) {
   // Ports a new bridge must not take: the event server, the host bridge, other
   // child bridges, and every bridge kept from --base (a kept bridge never moves).
   const external = new Set([...reservePorts, ...portsUsedByOthers(otherBlocks)]);
-  const taken = new Set([
-    opts.eventPortBase,
-    hostBridge?.port ?? bridgeIdentityFor(`multiBridge:${opts.name}`).port,
-    ...external,
-  ].filter(Boolean));
+  const hostPort = hostBridge?.port ?? bridgeIdentityFor(`multiBridge:${opts.name}`).port;
+  const taken = new Set([opts.eventPortBase, hostPort, ...external].filter(Boolean));
   const decided = selected.map(({ b }) => ({ b, found: keptIdentityFor(previous.get(b.name), oldUsernames) }));
   const warn = (b, text) => process.stderr.write(`warning: bridge "${b.name}": ${text}\n`);
+  const keptPorts = new Map();
+  for (const { found } of decided) {
+    const port = found?.kept?.port ?? found?.partial?.port;
+    if (port !== undefined) keptPorts.set(port, (keptPorts.get(port) ?? 0) + 1);
+  }
   for (const { b, found } of decided) {
     const port = found?.kept?.port ?? found?.partial?.port;
     if (port === undefined) continue;
     taken.add(port);
-    if (external.has(port)) {
-      warn(b, `its port ${port} in --base is also used by another child bridge; it stays where it is, move one of them`);
+    const clashes = [
+      port === opts.eventPortBase ? 'the event server port' : undefined,
+      port === hostPort ? 'the host bridge port' : undefined,
+      external.has(port) ? 'another child bridge' : undefined,
+      keptPorts.get(port) > 1 ? 'another kept bridge' : undefined,
+    ].filter(Boolean);
+    if (clashes.length > 0) {
+      warn(b, `its port ${port} in --base is also used by ${clashes.join(' and ')}; a kept bridge never moves, so it stays, change one of them`);
     }
   }
   const bridges = decided.map(({ b, found }) => {
@@ -351,7 +359,7 @@ if (multi && opts.newIdentities) {
         + `only the pin and setup id are new${found.partial.port === undefined ? ' and a port is assigned' : ''}`);
     }
     if (discarded) {
-      warn(b, `the identity in --base was discarded (${found.reasons.join(', ')}); it gets a new username, pin, setup id and port `
+      warn(b, `the identity in --base was discarded (${found.reasons.join(', ')}); it gets a new username, pin and setup id, and the port derived for it (not the one in --base), `
         + `and needs a new pairing${opts.keepEnabled ? '' : '; it is listed disabled (--keep-enabled keeps its state)'}`);
     }
     const wanted = enable.has(instanceName(b)) || (prev?.enabled === true && (prev.newIdentity === true || found?.partial !== undefined));

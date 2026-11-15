@@ -328,7 +328,7 @@ describe('SlatBlindAccessory', () => {
     address: 'HmIP.S:4', name: 'Slats', index: 4, type: 'BLIND_VIRTUAL_RECEIVER',
   };
 
-  it('writes tilt angle -90..90 as 0..100 percent in one debounced COMBINED_PARAMETER with the level', async () => {
+  it('writes tilt angle -90..90 as 0..100 percent in one debounced COMBINED_PARAMETER (L2 only)', async () => {
     vi.useFakeTimers();
     try {
       const env = makeEnv();
@@ -340,7 +340,7 @@ describe('SlatBlindAccessory', () => {
       await target.onSetHandler!(0);
       await vi.advanceTimersByTimeAsync(1000);
       expect(env.setValueMock).toHaveBeenCalledTimes(1);
-      expect(env.setValueMock).toHaveBeenCalledWith('HmIP.S:4', 'COMBINED_PARAMETER', 'L=30,L2=50');
+      expect(env.setValueMock).toHaveBeenCalledWith('HmIP.S:4', 'COMBINED_PARAMETER', 'L2=50');
     } finally {
       vi.useRealTimers();
     }

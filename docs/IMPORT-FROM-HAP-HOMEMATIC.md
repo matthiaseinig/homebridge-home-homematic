@@ -178,10 +178,11 @@ Rules that keep this safe:
   blind type (live movement reporting) plus
   CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle, mapped to the
   HmIP `LEVEL_2` datapoint (-90..90 degrees to 0..1) like the slat blind
-  type, including its write path: HmIP actuators ignore a lone `LEVEL_2`,
-  so tilt (debounced, about 1 s) is sent together with the position as one
-  `COMBINED_PARAMETER` write by default. The plugin setting `slatWriteMode`
-  (`combined`, `level2-then-stop`, `level2`) changes that; test one blind
+  type. Positions are plain `LEVEL` writes at once. HmIP actuators ignore a
+  lone `LEVEL_2`, so tilt (debounced, about 1 s) is sent as one
+  `COMBINED_PARAMETER` write `L2=<pct>` by default. The plugin setting
+  `slatWriteMode` (`combined`, `level2-then-stop`, `level2`) changes that;
+  test one blind
   first, see the README. Blinds without `useSlats` get no tilt (a tilt left
   on a cached accessory is removed).
 
@@ -285,7 +286,8 @@ node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport" ...
   with `--reserve-ports 36001,36002` (repeatable, also adds to the ports
   read from a full config). The event server port and the host bridge port
   are always avoided too. A kept bridge never moves; if its port is also
-  used by another child bridge the tool warns and leaves it.
+  the event server port, the host bridge port, another child bridge's port or
+  another kept bridge's port, the tool warns and leaves it.
 - `--base` may be a full Homebridge `config.json`, the array this tool wrote
   with `--out` (so a re-run on its own output changes nothing), or one
   block. If it holds no HomematicHap block the tool fails with an error
@@ -293,8 +295,8 @@ node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport" ...
 - A `--base` identity that cannot be kept fully is handled by what is
   missing; the tool prints a warning naming the bridge (no secrets):
   - **Username unusable** (missing, or an old hap-homematic username): the
-    username, pin, setup id and port are all new, so the bridge needs a new
-    pairing. It is listed `enabled: false` so it is not published unasked;
+    username, pin and setup id are new and the port is the one derived for
+    it (not the one in `--base`), so the bridge needs a new pairing. It is listed `enabled: false` so it is not published unasked;
     `--keep-enabled` keeps its enabled state (`--enable` or enabled in
     `--base`).
   - **Username usable but the pin is missing, no port, or the entry is not a

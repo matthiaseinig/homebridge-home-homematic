@@ -8,12 +8,16 @@
   HmIP `LEVEL_2` datapoint exactly like the slat blind type (shared code).
   Without `useSlats` nothing changes (tilt left on a cached accessory is
   removed).
-- **Slat writes that HmIP actuators accept.** A lone `LEVEL_2` is ignored by
-  HmIP blind actuators, so tilt is debounced (about 1 s) and written with the
-  position as one `COMBINED_PARAMETER` (`L=<pct>,L2=<pct>`). New plugin
-  setting `slatWriteMode`: `combined` (default), `level2-then-stop`,
-  `level2` (legacy). Applies to the slat blind type and to `useSlats`
-  blinds. Test one blind and switch the mode if needed (README).
+- **Slat tilt writes that HmIP actuators accept.** A lone `LEVEL_2` is
+  ignored by HmIP blind actuators, so tilt is debounced (about 1 s, last
+  value wins) and written as one `COMBINED_PARAMETER` `L2=<pct>` (no `L=`:
+  only the slats change, the blind never moves). Positions are unchanged
+  from 1.5.0: plain `LEVEL`, at once. New plugin setting `slatWriteMode`:
+  `combined` (default), `level2-then-stop` (opt-in; STOP only when the blind
+  is not moving), `level2` (legacy). A failed tilt write is logged once per
+  accessory, resets HomeKit's target tilt and is never replayed. Reported
+  `LEVEL_2` above 1 is clamped for display only. Test one blind and switch
+  the mode if needed (README).
 - **Import converter hardening** (`--new-identities`): the ports of bridges
   kept from `--base` are reserved before new ports are assigned, so a kept
   bridge never moves; ports of other Homebridge child bridges are avoided
@@ -24,7 +28,8 @@
   missing, the username and port stay, only pin and setup id are renewed and
   the bridge is not disabled. `--base` also accepts the converter's own
   `--out` array and fails when no HomematicHap block is found. A kept
-  bridge on another child bridge's port is warned about.
+  bridge on the event server port, the host port or another bridge's port
+  is warned about and does not move.
 
 ## 1.5.0
 

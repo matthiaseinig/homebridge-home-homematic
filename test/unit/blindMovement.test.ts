@@ -21,6 +21,7 @@ function setup(type: string, address: string, settings?: Record<string, unknown>
       callbackId: 'c', channelAddress: address, datapoint, value, receivedAt: 0,
     });
   };
+  const rawLog = makeLog();
   const hap = makeHapStub();
   const mk = (name: string) => {
     class C { static UUID = `char:${name}`; UUID = `char:${name}`; }
@@ -36,7 +37,7 @@ function setup(type: string, address: string, settings?: Record<string, unknown>
   const ctx = {
     accessory: asPlatformAccessory(accessory),
     ccu,
-    log: new PrefixedLogger(makeLog(), 'blind'),
+    log: new PrefixedLogger(rawLog, 'blind'),
     Service: { ...hap.Service, WindowCovering: S },
     Characteristic,
   } as unknown as ServiceContext;
@@ -46,7 +47,7 @@ function setup(type: string, address: string, settings?: Record<string, unknown>
   const svc = accessory.services[0]!;
   const get = (n: string) => svc.characteristics.get(`char:${n}`)!;
   return {
-    fire, setValue, getValue, handler, get, svc, accessory,
+    fire, setValue, getValue, handler, get, svc, accessory, rawLog,
     reattach: () => blindService.build(ctx).attach(channel),
     pos: () => get('CurrentPosition').value,
     tgt: () => get('TargetPosition').onGetHandler!() as Promise<unknown>,
@@ -200,14 +201,13 @@ describe('BlindAccessory slat tilt (useSlats)', () => {
     expect(t.get('TargetHorizontalTiltAngle').value).toBe(90);
   });
 
-  it('with useSlats movement reporting is intact', async () => {
+  it('with useSlats movement reporting is intact and the position goes out at once as plain LEVEL', async () => {
     const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
     t.fire('LEVEL', 0);
     t.fire('LEVEL_2', 0.5);
     await t.command(100);
+    expect(t.setValue.mock.calls).toEqual([['HmIP.B:4', 'LEVEL', 1]]);
     expect(t.state()).toBe(INC);
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'COMBINED_PARAMETER', 'L=100,L2=50');
     t.fire('ACTIVITY_STATE', 1);
     t.fire('LEVEL', 0.5);
     expect(t.pos()).toBe(50);
@@ -218,16 +218,34 @@ describe('BlindAccessory slat tilt (useSlats)', () => {
     t.fire('ACTIVITY_STATE', 3);
     expect(t.state()).toBe(STOP);
   });
+
+  it('reports LEVEL_2 above 1 clamped, for display only', () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
+    t.fire('LEVEL_2', 1.01);
+    expect(t.get('CurrentHorizontalTiltAngle').value).toBe(90);
+    expect(t.setValue).not.toHaveBeenCalled();
+  });
 });
 
 describe('slat writes (slatWriteMode)', () => {
   const ADDR = 'HmIP.B:4';
   const tilt = (t: ReturnType<typeof setup>, v: number) => t.get('TargetHorizontalTiltAngle').onSetHandler!(v);
   const dps = (t: ReturnType<typeof setup>) => t.setValue.mock.calls.map(([, dp, v]) => [dp, v]);
+  const warns = (t: ReturnType<typeof setup>) => (t.rawLog as unknown as { warn: { mock: { calls: unknown[] } } }).warn.mock.calls.length;
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('combined (default): tilt is debounced, last value wins, one COMBINED_PARAMETER with the known level', async () => {
+  it('positions go out at once as plain LEVEL in every mode, with no COMBINED_PARAMETER', async () => {
+    for (const mode of [undefined, 'level2-then-stop', 'level2']) {
+      const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true }, mode);
+      await t.command(70);
+      expect(dps(t)).toEqual([['LEVEL', 0.7]]);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(dps(t)).toEqual([['LEVEL', 0.7]]);
+    }
+  });
+
+  it('combined (default): tilt is debounced, last value wins, one lone L2 write', async () => {
     const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
     t.fire('LEVEL', 0.4);
     await tilt(t, -90);
@@ -238,70 +256,58 @@ describe('slat writes (slatWriteMode)', () => {
     await vi.advanceTimersByTimeAsync(999);
     expect(t.setValue).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=40,L2=100']]);
+    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L2=100']]);
   });
 
-  it('combined: a position change and a tilt change inside the window become one write', async () => {
+  it('a tilt during a move never sends L, and the move keeps its target', async () => {
     const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
-    await t.command(70);
-    expect(t.setValue).not.toHaveBeenCalled();
+    t.fire('LEVEL', 0);
+    await t.command(100);
+    t.fire('ACTIVITY_STATE', 1);
+    t.fire('LEVEL', 0.3);
     await tilt(t, 0);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=70,L2=50']]);
+    expect(dps(t)).toEqual([['LEVEL', 1], ['COMBINED_PARAMETER', 'L2=50']]);
+    expect(dps(t).some(([, v]) => String(v).includes('L='))).toBe(false);
+    expect(await t.tgt()).toBe(100);
   });
 
-  it('combined: tilt first, then position, is also one write; position alone keeps the known tilt', async () => {
+  it('a failed tilt write resets the target tilt, logs once and is never replayed', async () => {
     const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
-    await tilt(t, -90);
-    await t.command(25);
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=25,L2=0']]);
-    await t.command(60);
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(dps(t)[1]).toEqual(['COMBINED_PARAMETER', 'L=60,L2=0']);
-  });
-
-  it('combined: reads LEVEL first when no level is known since start', async () => {
-    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
-    t.getValue.mockImplementation(async (_a, dp) => (dp === 'LEVEL' ? 0.8 : undefined));
+    t.fire('LEVEL_2', 0.5);
+    t.setValue.mockRejectedValue(new Error('boom'));
     await tilt(t, 90);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(t.getValue).toHaveBeenCalledWith(ADDR, 'LEVEL');
-    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=80,L2=100']]);
-  });
-
-  it('combined: falls back to the single datapoint when the other side stays unknown', async () => {
-    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
-    await tilt(t, 0);
+    expect(t.get('TargetHorizontalTiltAngle').value).toBe(0);
+    expect(warns(t)).toBe(1);
+    await tilt(t, 90);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(dps(t)).toEqual([['LEVEL_2', 0.5]]);
+    expect(warns(t)).toBe(1);
+    t.setValue.mockReset().mockResolvedValue(undefined);
+    await t.command(40);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(dps(t)).toEqual([['LEVEL', 0.4]]);
   });
 
-  it('level2-then-stop: position at once, tilt debounced as LEVEL_2 then STOP=true', async () => {
+  it('level2-then-stop: LEVEL_2 then STOP when still, STOP skipped while moving', async () => {
     const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true }, 'level2-then-stop');
-    await t.command(50);
-    expect(dps(t)).toEqual([['LEVEL', 0.5]]);
-    await tilt(t, -90);
     await tilt(t, 0);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(dps(t)).toEqual([['LEVEL', 0.5], ['LEVEL_2', 0.5], ['STOP', true]]);
-  });
-
-  it('level2 (legacy): LEVEL and LEVEL_2 are written at once, separately', async () => {
-    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true }, 'level2');
-    await t.command(50);
+    expect(dps(t)).toEqual([['LEVEL_2', 0.5], ['STOP', true]]);
+    t.setValue.mockClear();
+    t.fire('LEVEL', 0);
+    await t.command(100);
+    t.setValue.mockClear();
     await tilt(t, 90);
-    expect(dps(t)).toEqual([['LEVEL', 0.5], ['LEVEL_2', 1]]);
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(t.setValue).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dps(t)).toEqual([['LEVEL_2', 1]]);
   });
 
-  it('a failed debounced write is logged, not thrown', async () => {
-    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
-    t.setValue.mockRejectedValueOnce(new Error('boom'));
-    t.fire('LEVEL', 0.5);
-    await tilt(t, 0);
-    await vi.advanceTimersByTimeAsync(1000);
+  it('level2 (legacy): LEVEL_2 is written at once', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true }, 'level2');
+    await tilt(t, 90);
+    expect(dps(t)).toEqual([['LEVEL_2', 1]]);
+    await vi.advanceTimersByTimeAsync(5000);
     expect(t.setValue).toHaveBeenCalledTimes(1);
   });
 

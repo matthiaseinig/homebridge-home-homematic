@@ -35,13 +35,13 @@ class SlatBlindHandler extends AccessoryBase implements ChannelService {
       .onSet(this.wrapSet<number>(async (value) => {
         const pct = normalizeLevelToPercent(value) ?? 0;
         this.target = pct;
-        await this.writeLevel(this.channelAddress, percentToLevelFraction(pct));
+        await this.ccu.setValue(this.channelAddress, 'LEVEL', percentToLevelFraction(pct));
       }));
 
     service.getCharacteristic(this.Characteristic.PositionState)
       .onGet(this.wrapGet<number>(() => this.derivePositionState()));
 
-    this.attachSlatTilt(service, this.channelAddress);
+    this.attachSlatTilt(service, this.channelAddress, () => this.derivePositionState() !== STATE_STOPPED);
 
     this.registerListener(this.channelAddress, 'LEVEL', (raw) => {
       const pct = normalizeLevelToPercent(raw);

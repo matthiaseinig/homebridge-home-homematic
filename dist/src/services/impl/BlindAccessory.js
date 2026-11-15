@@ -52,7 +52,7 @@ class BlindHandler extends AccessoryBase {
             .onSet(this.wrapSet(async (value) => {
             const pct = normalizeLevelToPercent(value) ?? 0;
             this.onCommand(pct);
-            await this.writeLevel(this.channelAddress, percentToLevelFraction(pct));
+            await this.ccu.setValue(this.channelAddress, 'LEVEL', percentToLevelFraction(pct));
         }));
         service.getCharacteristic(this.Characteristic.PositionState)
             .onGet(this.wrapGet(() => this.positionState()));
@@ -96,7 +96,7 @@ class BlindHandler extends AccessoryBase {
         });
         // Imported hap-homematic setting: the blind has slats, so add tilt (LEVEL_2).
         if (this.accessory.context?.settings?.useSlats === true) {
-            this.attachSlatTilt(service, this.channelAddress);
+            this.attachSlatTilt(service, this.channelAddress, () => this.positionState() !== STATE_STOPPED);
         }
         else {
             // A cached accessory may still carry tilt from when useSlats was on.

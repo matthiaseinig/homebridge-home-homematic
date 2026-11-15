@@ -145,18 +145,21 @@ npm install -g homebridge-homematic-hap
 
 ## Blinds with slats: test one blind first
 
-HmIP blind actuators (for example HmIPW-DRBL4) ignore a lone `LEVEL_2` write,
-so slat tilt is written together with the position. The plugin setting
-`slatWriteMode` (config UI: "Slat write mode") selects how:
+HmIP blind actuators (for example HmIPW-DRBL4) ignore a lone `LEVEL_2` write.
+Positions are not affected by this: they always go out at once as a plain
+`LEVEL` write, with or without slats. Only the slat tilt uses the plugin
+setting `slatWriteMode` (config UI: "Slat write mode"):
 
 - `combined` (default): tilt changes are debounced (about 1 s, the last value
-  wins) and sent as one `COMBINED_PARAMETER` write `L=<position %>,L2=<tilt %>`.
-  A position change in the same window is merged into that write, so on a
-  blind with slats a position command is also sent after about 1 s.
-- `level2-then-stop`: position at once; tilt debounced, then `LEVEL_2`
-  followed by `STOP=true`.
-- `level2`: the legacy behaviour, `LEVEL` and `LEVEL_2` written at once and
-  separately (HmIP actuators may ignore the tilt).
+  wins) and sent as one `COMBINED_PARAMETER` write `L2=<tilt %>`. It has no
+  `L=` part, so it changes only the slats and never moves the blind.
+- `level2-then-stop` (opt-in): debounced `LEVEL_2`, then `STOP=true` unless
+  the blind is moving (STOP is then skipped and logged).
+- `level2`: the legacy behaviour, `LEVEL_2` written at once (HmIP actuators
+  may ignore it).
+
+If a tilt write fails, it is logged once per accessory, HomeKit's target tilt
+is reset to the current tilt, and nothing is retried or replayed later.
 
 Applies to the slat blind type and to normal blinds imported with
 `useSlats: true`. Before relying on it, test the tilt on one blind in the
