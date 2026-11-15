@@ -64,7 +64,7 @@ class BlindHandler extends AccessoryBase implements ChannelService {
       .onSet(this.wrapSet<number>(async (value) => {
         const pct = normalizeLevelToPercent(value) ?? 0;
         this.onCommand(pct);
-        await this.ccu.setValue(this.channelAddress, 'LEVEL', percentToLevelFraction(pct));
+        await this.writeLevel(this.channelAddress, percentToLevelFraction(pct));
       }));
 
     service.getCharacteristic(this.Characteristic.PositionState)
@@ -112,6 +112,13 @@ class BlindHandler extends AccessoryBase implements ChannelService {
     // Imported hap-homematic setting: the blind has slats, so add tilt (LEVEL_2).
     if (this.accessory.context?.settings?.useSlats === true) {
       this.attachSlatTilt(service, this.channelAddress);
+    } else {
+      // A cached accessory may still carry tilt from when useSlats was on.
+      for (const tilt of [this.Characteristic.CurrentHorizontalTiltAngle, this.Characteristic.TargetHorizontalTiltAngle]) {
+        if (service.testCharacteristic(tilt)) {
+          service.removeCharacteristic(service.getCharacteristic(tilt));
+        }
+      }
     }
 
     // Pull initial position. Without this, the accessory shows 0 (closed)

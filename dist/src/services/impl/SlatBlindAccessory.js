@@ -27,7 +27,7 @@ class SlatBlindHandler extends AccessoryBase {
             .onSet(this.wrapSet(async (value) => {
             const pct = normalizeLevelToPercent(value) ?? 0;
             this.target = pct;
-            await this.ccu.setValue(this.channelAddress, 'LEVEL', percentToLevelFraction(pct));
+            await this.writeLevel(this.channelAddress, percentToLevelFraction(pct));
         }));
         service.getCharacteristic(this.Characteristic.PositionState)
             .onGet(this.wrapGet(() => this.derivePositionState()));

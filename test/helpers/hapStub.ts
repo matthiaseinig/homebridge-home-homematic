@@ -24,6 +24,7 @@ export interface ServiceStub {
   updateCharacteristic: Mock;
   addCharacteristic: Mock;
   testCharacteristic: Mock;
+  removeCharacteristic: Mock;
 }
 
 export interface CharacteristicStub {
@@ -78,7 +79,9 @@ export function makeServiceStub(uuid: string, displayName = '', subtype?: string
     updateCharacteristic: vi.fn() as Mock,
     addCharacteristic: vi.fn() as Mock,
     testCharacteristic: vi.fn() as Mock,
+    removeCharacteristic: vi.fn() as Mock,
   };
+  s.removeCharacteristic.mockImplementation((c: { uuid: string }) => { s.characteristics.delete(c.uuid); });
   s.getCharacteristic.mockImplementation((char: { UUID: string } | (new () => unknown)) => {
     const cuuid = (char as { UUID: string }).UUID ?? (char as { name: string }).name;
     let c = s.characteristics.get(cuuid);
@@ -120,7 +123,7 @@ export function makeServiceStub(uuid: string, displayName = '', subtype?: string
     return stub;
   });
   s.testCharacteristic.mockImplementation((char: { UUID?: string } | string) => {
-    const cuuid = typeof char === 'string' ? char : char.UUID ?? '';
+    const cuuid = typeof char === 'string' ? char : char?.UUID ?? '';
     return s.characteristics.has(cuuid);
   });
   return s;

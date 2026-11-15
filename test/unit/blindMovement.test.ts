@@ -11,11 +11,11 @@ const INC = 1;
 const DEC = 0;
 const STOP = 2;
 
-function setup(type: string, address: string, settings?: Record<string, unknown>) {
-  const config = resolveConfig({ platform: 'HomematicHap', ccuIp: '127.0.0.1' });
+function setup(type: string, address: string, settings?: Record<string, unknown>, slatWriteMode?: string) {
+  const config = resolveConfig({ platform: 'HomematicHap', ccuIp: '127.0.0.1', ...(slatWriteMode ? { slatWriteMode } : {}) });
   const ccu = new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'blind') });
   const setValue = vi.spyOn(ccu, 'setValue').mockResolvedValue(undefined);
-  vi.spyOn(ccu, 'getValue').mockResolvedValue(undefined);
+  const getValue = vi.spyOn(ccu, 'getValue').mockResolvedValue(undefined);
   const fire = (datapoint: string, value: unknown) => {
     (ccu as unknown as { handleEvent(ev: object): void }).handleEvent({
       callbackId: 'c', channelAddress: address, datapoint, value, receivedAt: 0,
@@ -46,7 +46,8 @@ function setup(type: string, address: string, settings?: Record<string, unknown>
   const svc = accessory.services[0]!;
   const get = (n: string) => svc.characteristics.get(`char:${n}`)!;
   return {
-    fire, setValue, handler, get,
+    fire, setValue, getValue, handler, get, svc, accessory,
+    reattach: () => blindService.build(ctx).attach(channel),
     pos: () => get('CurrentPosition').value,
     tgt: () => get('TargetPosition').onGetHandler!() as Promise<unknown>,
     state: () => get('PositionState').value,
@@ -182,21 +183,14 @@ describe('BlindAccessory movement', () => {
 
 describe('BlindAccessory slat tilt (useSlats)', () => {
   const TILT_CHARS = ['CurrentHorizontalTiltAngle', 'TargetHorizontalTiltAngle'];
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
 
   it('without useSlats there is no tilt', () => {
     for (const settings of [undefined, { useSlats: false }]) {
       const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', settings);
       for (const n of TILT_CHARS) expect(t.get(n)).toBeUndefined();
     }
-  });
-
-  it('with useSlats tilt maps -90..90 to LEVEL_2 and sends LEVEL_2 only', async () => {
-    const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
-    await t.get('TargetHorizontalTiltAngle').onSetHandler!(0);
-    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'LEVEL_2', 0.5);
-    await t.get('TargetHorizontalTiltAngle').onSetHandler!(-90);
-    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'LEVEL_2', 0);
-    expect(t.setValue.mock.calls.every(([, dp]) => dp === 'LEVEL_2')).toBe(true);
   });
 
   it('with useSlats LEVEL_2 events update the tilt angle', () => {
@@ -209,9 +203,11 @@ describe('BlindAccessory slat tilt (useSlats)', () => {
   it('with useSlats movement reporting is intact', async () => {
     const t = setup('BLIND_VIRTUAL_RECEIVER', 'HmIP.B:4', { useSlats: true });
     t.fire('LEVEL', 0);
+    t.fire('LEVEL_2', 0.5);
     await t.command(100);
-    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'LEVEL', 1);
     expect(t.state()).toBe(INC);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.setValue).toHaveBeenCalledWith('HmIP.B:4', 'COMBINED_PARAMETER', 'L=100,L2=50');
     t.fire('ACTIVITY_STATE', 1);
     t.fire('LEVEL', 0.5);
     expect(t.pos()).toBe(50);
@@ -221,5 +217,102 @@ describe('BlindAccessory slat tilt (useSlats)', () => {
     expect(t.state()).toBe(INC);
     t.fire('ACTIVITY_STATE', 3);
     expect(t.state()).toBe(STOP);
+  });
+});
+
+describe('slat writes (slatWriteMode)', () => {
+  const ADDR = 'HmIP.B:4';
+  const tilt = (t: ReturnType<typeof setup>, v: number) => t.get('TargetHorizontalTiltAngle').onSetHandler!(v);
+  const dps = (t: ReturnType<typeof setup>) => t.setValue.mock.calls.map(([, dp, v]) => [dp, v]);
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('combined (default): tilt is debounced, last value wins, one COMBINED_PARAMETER with the known level', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    t.fire('LEVEL', 0.4);
+    await tilt(t, -90);
+    await tilt(t, 0);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(t.setValue).not.toHaveBeenCalled();
+    await tilt(t, 90);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(t.setValue).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=40,L2=100']]);
+  });
+
+  it('combined: a position change and a tilt change inside the window become one write', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    await t.command(70);
+    expect(t.setValue).not.toHaveBeenCalled();
+    await tilt(t, 0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=70,L2=50']]);
+  });
+
+  it('combined: tilt first, then position, is also one write; position alone keeps the known tilt', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    await tilt(t, -90);
+    await t.command(25);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=25,L2=0']]);
+    await t.command(60);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dps(t)[1]).toEqual(['COMBINED_PARAMETER', 'L=60,L2=0']);
+  });
+
+  it('combined: reads LEVEL first when no level is known since start', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    t.getValue.mockImplementation(async (_a, dp) => (dp === 'LEVEL' ? 0.8 : undefined));
+    await tilt(t, 90);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.getValue).toHaveBeenCalledWith(ADDR, 'LEVEL');
+    expect(dps(t)).toEqual([['COMBINED_PARAMETER', 'L=80,L2=100']]);
+  });
+
+  it('combined: falls back to the single datapoint when the other side stays unknown', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    await tilt(t, 0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dps(t)).toEqual([['LEVEL_2', 0.5]]);
+  });
+
+  it('level2-then-stop: position at once, tilt debounced as LEVEL_2 then STOP=true', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true }, 'level2-then-stop');
+    await t.command(50);
+    expect(dps(t)).toEqual([['LEVEL', 0.5]]);
+    await tilt(t, -90);
+    await tilt(t, 0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dps(t)).toEqual([['LEVEL', 0.5], ['LEVEL_2', 0.5], ['STOP', true]]);
+  });
+
+  it('level2 (legacy): LEVEL and LEVEL_2 are written at once, separately', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true }, 'level2');
+    await t.command(50);
+    await tilt(t, 90);
+    expect(dps(t)).toEqual([['LEVEL', 0.5], ['LEVEL_2', 1]]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.setValue).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed debounced write is logged, not thrown', async () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    t.setValue.mockRejectedValueOnce(new Error('boom'));
+    t.fire('LEVEL', 0.5);
+    await tilt(t, 0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.setValue).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes tilt characteristics from a cached accessory when useSlats is off', () => {
+    const t = setup('BLIND_VIRTUAL_RECEIVER', ADDR, { useSlats: true });
+    expect(t.svc.characteristics.has('char:TargetHorizontalTiltAngle')).toBe(true);
+    expect(t.svc.characteristics.has('char:CurrentHorizontalTiltAngle')).toBe(true);
+    (t.accessory.context as { settings: Record<string, unknown> }).settings = { useSlats: false };
+    t.reattach();
+    expect(t.svc.characteristics.has('char:TargetHorizontalTiltAngle')).toBe(false);
+    expect(t.svc.characteristics.has('char:CurrentHorizontalTiltAngle')).toBe(false);
+    expect(t.svc.characteristics.has('char:TargetPosition')).toBe(true);
   });
 });

@@ -19,6 +19,7 @@ export declare abstract class AccessoryBase {
     protected readonly Service: typeof Service;
     protected readonly Characteristic: typeof Characteristic;
     private readonly disposers;
+    private slatWriter;
     constructor(ctx: ServiceContext);
     /**
      * @param legacy Subtype to use when the accessory reuses a hap-homematic
@@ -55,10 +56,15 @@ export declare abstract class AccessoryBase {
     protected attachBattery(featureChannelAddress: string): void;
     /**
      * Add slat tilt to a WindowCovering service: Current/TargetHorizontalTiltAngle
-     * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). A tilt
-     * command writes LEVEL_2 only. Shared by the slat blind type and by the
-     * normal blind type when its imported `useSlats` setting is on.
+     * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). Tilt and
+     * position writes go through a SlatWriter (debounced; mode from the plugin
+     * setting `slatWriteMode`), because HmIP actuators ignore a lone LEVEL_2.
+     * Shared by the slat blind type and by the normal blind type when its
+     * imported `useSlats` setting is on. The handler must write positions with
+     * writeLevel().
      */
     protected attachSlatTilt(service: Service, channelAddress: string): void;
+    /** Write a position (CCU fraction 0..1); merged with a pending tilt when slats are on. */
+    protected writeLevel(channelAddress: string, fraction: number): Promise<void>;
     dispose(): void;
 }

@@ -89,6 +89,17 @@
           }
         }
       },
+      "slatWriteMode": {
+        "title": "Slat write mode",
+        "type": "string",
+        "default": "combined",
+        "oneOf": [
+          { "title": "Combined (position and tilt in one COMBINED_PARAMETER write)", "enum": ["combined"] },
+          { "title": "LEVEL_2 then STOP", "enum": ["level2-then-stop"] },
+          { "title": "LEVEL_2 only (legacy)", "enum": ["level2"] }
+        ],
+        "description": "How blinds with slats are written. If the slats do not move in HomeKit, test one blind and switch the mode."
+      },
       "hapHomematicIdentity": {
         "title": "Keep hap-homematic HomeKit identities",
         "type": "boolean",

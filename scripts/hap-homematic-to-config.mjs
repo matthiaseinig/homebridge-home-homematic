@@ -153,20 +153,34 @@ function randomSetupId() {
 }
 
 /**
- * The identity a bridge already has in the --base block, if it can be kept:
- * newIdentity, with username, pin and port, and not one of the hap-homematic
- * usernames (those stay paired meanwhile). Otherwise `{ discarded: <reason> }`
- * when the base has an entry for the bridge, or undefined when it has none.
+ * What the --base block says about a bridge's identity:
+ *   undefined             the base has no entry for the bridge
+ *   { kept }              username, pin and port are kept
+ *   { partial, reasons }  the username is usable, so the HomeKit pairing key
+ *                         stays; the pin is incomplete or the entry is not a
+ *                         new-identity bridge: pin and setup id are renewed
+ *                         (and the port is assigned when the base has none)
+ *   { discarded, reasons } no usable username (missing, or an old
+ *                         hap-homematic one): everything is renewed, which is
+ *                         a new pairing
  */
 function keptIdentityFor(previous, oldUsernames) {
   if (!previous) return undefined;
-  if (previous.newIdentity !== true) return { discarded: 'it is not a new-identity bridge' };
-  const missing = ['username', 'pincode', 'port'].filter((k) => !previous[k]);
-  if (missing.length > 0) return { discarded: `it has no ${missing.join(', ')}` };
-  const kept = { username: String(previous.username).toUpperCase(), pincode: previous.pincode, port: previous.port };
-  if (previous.setupID) kept.setupID = previous.setupID;
-  if (oldUsernames.has(kept.username)) return { discarded: 'its username is a hap-homematic username' };
-  return { kept };
+  const username = previous.username ? String(previous.username).toUpperCase() : undefined;
+  const usernameOk = username !== undefined && !oldUsernames.has(username);
+  const reasons = [];
+  if (username === undefined) reasons.push('no username');
+  else if (!usernameOk) reasons.push('its username is a hap-homematic username');
+  if (previous.newIdentity !== true) reasons.push('it is not a new-identity bridge');
+  if (!previous.pincode) reasons.push('no pin');
+  if (!previous.port) reasons.push('no port');
+  if (!usernameOk) return { discarded: true, reasons };
+  if (reasons.length === 0) {
+    const kept = { username, pincode: previous.pincode, port: previous.port };
+    if (previous.setupID) kept.setupID = previous.setupID;
+    return { kept };
+  }
+  return { partial: { username, port: previous.port }, reasons };
 }
 
 /**
@@ -183,12 +197,30 @@ function freshIdentityFor(b, oldUsernames) {
   return { username, pincode: randomPin(), setupID: randomSetupId(), port };
 }
 
-/** The HomematicHap platform block of a full Homebridge config.json, else the object itself. */
-function baseBlockOf(base, blockName) {
-  if (!Array.isArray(base.platforms)) return { block: base, others: [] };
-  const mine = base.platforms.filter((p) => p?.platform === 'HomematicHap');
-  const block = mine.find((p) => p.name === blockName) ?? mine[0] ?? {};
-  return { block, others: [base.bridge, ...base.platforms, ...(base.accessories ?? [])].filter((x) => x && x !== block) };
+/**
+ * The HomematicHap platform block in a --base file, in any of these shapes: a
+ * full Homebridge config.json (platforms[]), an array of blocks (this tool's own
+ * --out file), or the block itself. Throws when there is none, so a wrong file
+ * never silently resets identities.
+ */
+function baseBlockOf(base, blockName, file) {
+  const isBlock = (x) => x && typeof x === 'object' && !Array.isArray(x)
+    && (x.platform === 'HomematicHap' || (x.platform === undefined && (x.ccuIp !== undefined || x.multiBridge !== undefined)));
+  const pick = (blocks) => blocks.find((p) => p.name === blockName) ?? blocks.find((p) => p.multiBridge) ?? blocks[0];
+  let block;
+  let others = [];
+  if (Array.isArray(base)) {
+    block = pick(base.filter(isBlock));
+  } else if (Array.isArray(base?.platforms)) {
+    block = pick(base.platforms.filter(isBlock));
+    others = [base.bridge, ...base.platforms, ...(base.accessories ?? [])].filter((x) => x && x !== block);
+  } else if (isBlock(base)) {
+    block = base;
+  }
+  if (!block) {
+    throw new Error(`--base ${file}: no HomematicHap platform block found (expected a Homebridge config.json, an array of blocks, or one block)`);
+  }
+  return { block, others };
 }
 
 /** HAP ports of other child bridges (and bridges of other HomematicHap blocks) in a full config. */
@@ -251,8 +283,9 @@ for (const [flag, names] of [['--bridge', opts.bridges], ['--enable', opts.enabl
   }
 }
 
-const baseFile = opts.base ? JSON.parse(fs.readFileSync(opts.base, 'utf8')) : {};
-const { block: base, others: otherBlocks } = baseBlockOf(baseFile, opts.name);
+const { block: base, others: otherBlocks } = opts.base
+  ? baseBlockOf(JSON.parse(fs.readFileSync(opts.base, 'utf8')), opts.name, opts.base)
+  : { block: {}, others: [] };
 const pick = (k) => (base[k] !== undefined ? { [k]: base[k] } : {});
 const ccuIp = base.ccuIp ?? opts.ccuIp;
 if (!ccuIp) {
@@ -284,34 +317,49 @@ if (multi && opts.newIdentities) {
   }
   // Ports a new bridge must not take: the event server, the host bridge, other
   // child bridges, and every bridge kept from --base (a kept bridge never moves).
+  const external = new Set([...reservePorts, ...portsUsedByOthers(otherBlocks)]);
   const taken = new Set([
     opts.eventPortBase,
     hostBridge?.port ?? bridgeIdentityFor(`multiBridge:${opts.name}`).port,
-    ...reservePorts,
-    ...portsUsedByOthers(otherBlocks),
+    ...external,
   ].filter(Boolean));
   const decided = selected.map(({ b }) => ({ b, found: keptIdentityFor(previous.get(b.name), oldUsernames) }));
-  for (const { found } of decided) {
-    if (found?.kept) taken.add(found.kept.port);
+  const warn = (b, text) => process.stderr.write(`warning: bridge "${b.name}": ${text}\n`);
+  for (const { b, found } of decided) {
+    const port = found?.kept?.port ?? found?.partial?.port;
+    if (port === undefined) continue;
+    taken.add(port);
+    if (external.has(port)) {
+      warn(b, `its port ${port} in --base is also used by another child bridge; it stays where it is, move one of them`);
+    }
   }
   const bridges = decided.map(({ b, found }) => {
     const prev = previous.get(b.name);
-    const id = found?.kept ?? freshIdentityFor(b, oldUsernames);
-    if (!found?.kept) {
+    const fresh = () => freshIdentityFor(b, oldUsernames);
+    const id = found?.kept ?? (found?.partial
+      ? { ...found.partial, pincode: randomPin(), setupID: randomSetupId() }
+      : fresh());
+    if (id.port === undefined || found?.discarded || !found) {
+      if (id.port === undefined) id.port = fresh().port;
       while (taken.has(id.port)) id.port += 1;
       taken.add(id.port);
     }
-    const discarded = found?.discarded !== undefined;
-    if (discarded) {
-      process.stderr.write(`warning: bridge "${b.name}": the identity in --base was discarded (${found.discarded}); `
-        + `it gets a new username, pin and port and needs a new pairing`
-        + `${opts.keepEnabled ? '' : '; it is listed disabled (--keep-enabled keeps its state)'}\n`);
+    const discarded = found?.discarded === true;
+    if (found?.partial) {
+      warn(b, `the identity in --base is incomplete (${found.reasons.join(', ')}); the username`
+        + `${found.partial.port === undefined ? '' : ' and port'} stay${found.partial.port === undefined ? 's' : ''}, `
+        + `only the pin and setup id are new${found.partial.port === undefined ? ' and a port is assigned' : ''}`);
     }
-    const wanted = enable.has(instanceName(b)) || (prev?.newIdentity === true && prev.enabled === true);
+    if (discarded) {
+      warn(b, `the identity in --base was discarded (${found.reasons.join(', ')}); it gets a new username, pin, setup id and port `
+        + `and needs a new pairing${opts.keepEnabled ? '' : '; it is listed disabled (--keep-enabled keeps its state)'}`);
+    }
+    const wanted = enable.has(instanceName(b)) || (prev?.enabled === true && (prev.newIdentity === true || found?.partial !== undefined));
     const entry = {
       name: b.name,
       // A bridge kept from --base stays enabled: disabling it would take a
-      // paired bridge off the network. One whose identity was discarded is
+      // paired bridge off the network (HomeKit pairs by username, so that also
+      // holds when only its pin is renewed). One whose username changed is
       // not paired any more, so it is not published until asked for.
       enabled: discarded && !opts.keepEnabled ? false : wanted,
       newIdentity: true,

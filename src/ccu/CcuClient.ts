@@ -14,6 +14,7 @@
 
 import { networkInterfaces } from 'node:os';
 import { EventEmitter } from 'node:events';
+import type { SlatWriteMode } from '../services/slatWriter.js';
 import { EventServer, type ChannelEvent } from './EventServer.js';
 import { CcuJsonRpcClient } from './CcuJsonRpcClient.js';
 import { RpcClient, INTERFACE_PORTS } from './RpcClient.js';
@@ -268,6 +269,11 @@ export class CcuClient extends EventEmitter {
       }
     }
     return false;
+  }
+
+  /** Plugin setting `slatWriteMode`: how blind position and slat tilt are written. */
+  get slatWriteMode(): SlatWriteMode {
+    return this.config.slatWriteMode;
   }
 
   /**

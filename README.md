@@ -143,6 +143,25 @@ npm install -g homebridge-homematic-hap
 > can't find its dependencies. `--install-links` forces a copy and
 > avoids the issue.
 
+## Blinds with slats: test one blind first
+
+HmIP blind actuators (for example HmIPW-DRBL4) ignore a lone `LEVEL_2` write,
+so slat tilt is written together with the position. The plugin setting
+`slatWriteMode` (config UI: "Slat write mode") selects how:
+
+- `combined` (default): tilt changes are debounced (about 1 s, the last value
+  wins) and sent as one `COMBINED_PARAMETER` write `L=<position %>,L2=<tilt %>`.
+  A position change in the same window is merged into that write, so on a
+  blind with slats a position command is also sent after about 1 s.
+- `level2-then-stop`: position at once; tilt debounced, then `LEVEL_2`
+  followed by `STOP=true`.
+- `level2`: the legacy behaviour, `LEVEL` and `LEVEL_2` written at once and
+  separately (HmIP actuators may ignore the tilt).
+
+Applies to the slat blind type and to normal blinds imported with
+`useSlats: true`. Before relying on it, test the tilt on one blind in the
+Home app and, if the slats do not move, switch the mode and restart.
+
 ## Quick start
 
 Before you start: **create a dedicated CCU user with the *Admin* role**

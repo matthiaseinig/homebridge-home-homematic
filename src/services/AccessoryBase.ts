@@ -12,6 +12,7 @@ import type { Characteristic, CharacteristicValue, Service, WithUUID } from 'hom
 import type { CcuClient } from '../ccu/CcuClient.js';
 import type { PrefixedLogger } from '../util/logger.js';
 import { toFiniteNumber } from '../util/sanitize.js';
+import { SlatWriter } from './slatWriter.js';
 import type { AccessoryHandle, ServiceContext } from './types.js';
 
 const HK_TILT_MIN = -90;
@@ -28,6 +29,7 @@ export abstract class AccessoryBase {
   protected readonly Characteristic: typeof Characteristic;
 
   private readonly disposers: Array<() => void> = [];
+  private slatWriter: SlatWriter | undefined;
 
   constructor(ctx: ServiceContext) {
     this.accessory = ctx.accessory;
@@ -189,11 +191,16 @@ export abstract class AccessoryBase {
 
   /**
    * Add slat tilt to a WindowCovering service: Current/TargetHorizontalTiltAngle
-   * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). A tilt
-   * command writes LEVEL_2 only. Shared by the slat blind type and by the
-   * normal blind type when its imported `useSlats` setting is on.
+   * (-90..90) mapped to the CCU `LEVEL_2` datapoint (0..1 fraction). Tilt and
+   * position writes go through a SlatWriter (debounced; mode from the plugin
+   * setting `slatWriteMode`), because HmIP actuators ignore a lone LEVEL_2.
+   * Shared by the slat blind type and by the normal blind type when its
+   * imported `useSlats` setting is on. The handler must write positions with
+   * writeLevel().
    */
   protected attachSlatTilt(service: Service, channelAddress: string): void {
+    const writer = new SlatWriter(this.ccu, channelAddress, this.ccu.slatWriteMode, this.log);
+    this.slatWriter = writer;
     let currentTilt = 0;
     let targetTilt = 0;
 
@@ -206,25 +213,39 @@ export abstract class AccessoryBase {
       .onGet(this.wrapGet<number>(() => targetTilt))
       .onSet(this.wrapSet<number>(async (value) => {
         targetTilt = value;
-        const fraction = (value - HK_TILT_MIN) / HK_TILT_RANGE;
-        await this.ccu.setValue(channelAddress, 'LEVEL_2', fraction);
+        await writer.setTilt((value - HK_TILT_MIN) / HK_TILT_RANGE);
       }));
 
     const apply = (raw: unknown): void => {
       const f = toFiniteNumber(raw);
       if (f === undefined) return;
-      const angle = HK_TILT_MIN + Math.max(0, Math.min(1, f)) * HK_TILT_RANGE;
-      currentTilt = Math.round(angle);
+      const clamped = Math.max(0, Math.min(1, f));
+      writer.noteTilt(clamped);
+      currentTilt = Math.round(HK_TILT_MIN + clamped * HK_TILT_RANGE);
       targetTilt = currentTilt;
       service.updateCharacteristic(this.Characteristic.CurrentHorizontalTiltAngle, currentTilt);
       service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, targetTilt);
     };
 
     this.registerListener(channelAddress, 'LEVEL_2', apply);
+    this.registerListener(channelAddress, 'LEVEL', (raw) => {
+      const f = toFiniteNumber(raw);
+      if (f !== undefined) writer.noteLevel(Math.max(0, Math.min(1, f)));
+    });
     this.ccu.getValue(channelAddress, 'LEVEL_2').then(apply).catch(() => undefined);
   }
 
+  /** Write a position (CCU fraction 0..1); merged with a pending tilt when slats are on. */
+  protected async writeLevel(channelAddress: string, fraction: number): Promise<void> {
+    if (this.slatWriter) {
+      await this.slatWriter.setLevel(fraction);
+      return;
+    }
+    await this.ccu.setValue(channelAddress, 'LEVEL', fraction);
+  }
+
   dispose(): void {
+    this.slatWriter?.dispose();
     while (this.disposers.length > 0) {
       const fn = this.disposers.pop();
       try {

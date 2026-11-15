@@ -178,8 +178,12 @@ Rules that keep this safe:
   blind type (live movement reporting) plus
   CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle, mapped to the
   HmIP `LEVEL_2` datapoint (-90..90 degrees to 0..1) like the slat blind
-  type. A tilt command writes `LEVEL_2` only. Blinds without `useSlats`
-  get no tilt.
+  type, including its write path: HmIP actuators ignore a lone `LEVEL_2`,
+  so tilt (debounced, about 1 s) is sent together with the position as one
+  `COMBINED_PARAMETER` write by default. The plugin setting `slatWriteMode`
+  (`combined`, `level2-then-stop`, `level2`) changes that; test one blind
+  first, see the README. Blinds without `useSlats` get no tilt (a tilt left
+  on a cached accessory is removed).
 
 ### Multi-bridge mode (one process for all bridges)
 
@@ -280,16 +284,23 @@ node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport" ...
   the bridge ports of other HomematicHap blocks are reserved), or list them
   with `--reserve-ports 36001,36002` (repeatable, also adds to the ports
   read from a full config). The event server port and the host bridge port
-  are always avoided too.
-- A `--base` identity that cannot be kept is discarded: the bridge has an
-  old hap-homematic username, or lacks a pin, username or port, or is not a
-  `newIdentity` bridge. The tool prints a warning naming the bridge (no
-  secrets) and lists that bridge as `enabled: false`, because it needs a new
-  pairing and must not be published unasked. `--keep-enabled` keeps its
-  enabled state (a bridge named with `--enable` or enabled in `--base`).
-- Pair each bridge in the Home app (the pin is in the block's
-  `multiBridge.bridges[].pincode`), then remove the matching hap-homematic
-  bridge from the Home app, so no device shows up twice.
+  are always avoided too. A kept bridge never moves; if its port is also
+  used by another child bridge the tool warns and leaves it.
+- `--base` may be a full Homebridge `config.json`, the array this tool wrote
+  with `--out` (so a re-run on its own output changes nothing), or one
+  block. If it holds no HomematicHap block the tool fails with an error
+  instead of resetting identities.
+- A `--base` identity that cannot be kept fully is handled by what is
+  missing; the tool prints a warning naming the bridge (no secrets):
+  - **Username unusable** (missing, or an old hap-homematic username): the
+    username, pin, setup id and port are all new, so the bridge needs a new
+    pairing. It is listed `enabled: false` so it is not published unasked;
+    `--keep-enabled` keeps its enabled state (`--enable` or enabled in
+    `--base`).
+  - **Username usable but the pin is missing, no port, or the entry is not a
+    `newIdentity` bridge**: only the pin and setup id are new (and a port is
+    assigned if there was none). Username and port stay, HomeKit pairs by
+    username, and the enabled state is kept.
 
 ## What the importer does NOT do
 

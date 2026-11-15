@@ -6,14 +6,25 @@
   keeps the normal blind type (live movement reporting) and now also gets
   CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle, mapped to the
   HmIP `LEVEL_2` datapoint exactly like the slat blind type (shared code).
-  Without `useSlats` nothing changes.
+  Without `useSlats` nothing changes (tilt left on a cached accessory is
+  removed).
+- **Slat writes that HmIP actuators accept.** A lone `LEVEL_2` is ignored by
+  HmIP blind actuators, so tilt is debounced (about 1 s) and written with the
+  position as one `COMBINED_PARAMETER` (`L=<pct>,L2=<pct>`). New plugin
+  setting `slatWriteMode`: `combined` (default), `level2-then-stop`,
+  `level2` (legacy). Applies to the slat blind type and to `useSlats`
+  blinds. Test one blind and switch the mode if needed (README).
 - **Import converter hardening** (`--new-identities`): the ports of bridges
   kept from `--base` are reserved before new ports are assigned, so a kept
   bridge never moves; ports of other Homebridge child bridges are avoided
   (read from a full `config.json` passed as `--base`, or `--reserve-ports`);
   a bridge whose `--base` identity has to be discarded (old hap-homematic
   username, missing pin, username or port) prints a warning and is listed
-  disabled unless `--keep-enabled`.
+  disabled unless `--keep-enabled`. If only the pin or `newIdentity` is
+  missing, the username and port stay, only pin and setup id are renewed and
+  the bridge is not disabled. `--base` also accepts the converter's own
+  `--out` array and fails when no HomematicHap block is found. A kept
+  bridge on another child bridge's port is warned about.
 
 ## 1.5.0
 
