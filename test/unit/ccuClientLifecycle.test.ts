@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CcuClient } from '../../src/ccu/CcuClient.js';
+import { TLS_CREDENTIALS_REFUSED } from '../../src/ccu/ccuTls.js';
 import { resolveConfig } from '../../src/util/config.js';
 import { PrefixedLogger } from '../../src/util/logger.js';
 import { makeLog } from '../helpers/hapStub.js';
@@ -273,5 +274,159 @@ describe('CcuClient address → interface lookup', () => {
     await ccu.setValue('HmIP-RF.000:1', 'STATE', true);
     expect(set).toHaveBeenCalledWith('HmIP-RF', '000:1', 'STATE', 'boolean', true);
     await ccu.stop();
+  });
+});
+
+describe('CcuClient skips CCU-internal loopback interface URLs', () => {
+  function remoteCcu(ccuIp: string): CcuClient {
+    const config = resolveConfig({
+      platform: 'HomematicHap',
+      ccuIp,
+      eventServer: { host: '127.0.0.1', port: 9876 },
+      interfaces: { bidcosRf: false, hmIpRf: false, bidcosWired: false, virtualDevices: false, cuxd: false },
+    });
+    return new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'lc-loopback') });
+  }
+
+  async function discovered(ccu: CcuClient, list: Array<{ name: string; port: number; url?: string }>): Promise<Map<string, number>> {
+    vi.spyOn(ccu.api, 'listInterfaces').mockResolvedValue(list);
+    vi.spyOn(ccu.api, 'listDevices').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'logout').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    await ccu.start();
+    const m = new Map((ccu as unknown as { discoveredPorts: Map<string, number> }).discoveredPorts);
+    await ccu.stop();
+    return m;
+  }
+
+  const CCU3_LIST = [
+    { name: 'BidCos-RF', port: 32001, url: 'xmlrpc://127.0.0.1:32001' },
+    { name: 'HmIP-RF', port: 32010, url: 'xmlrpc://127.0.0.1:32010' },
+    { name: 'VirtualDevices', port: 39292, url: 'xmlrpc://127.0.0.1:39292/groups' },
+  ];
+
+  it('ignores 127.0.0.1 URLs for a remote CCU, leaving the external defaults', async () => {
+    const m = await discovered(remoteCcu('10.0.0.2'), CCU3_LIST);
+    expect(m.size).toBe(0);
+  });
+
+  it('keeps loopback URLs when the CCU itself is the local host', async () => {
+    const m = await discovered(remoteCcu('127.0.0.1'), CCU3_LIST);
+    expect(m.get('HmIP-RF')).toBe(32010);
+  });
+
+  it('keeps non-loopback URLs and entries without a URL', async () => {
+    const m = await discovered(remoteCcu('10.0.0.2'), [
+      { name: 'BidCos-RF', port: 2001, url: 'xmlrpc://10.0.0.2:2001' },
+      { name: 'HmIP-RF', port: 2010 },
+      { name: 'VirtualDevices', port: 39292, url: 'xmlrpc://localhost:39292/groups' },
+      { name: 'CUxD', port: 8701, url: 'xmlrpc://[::1]:8701' },
+    ]);
+    expect([...m.entries()]).toEqual([['BidCos-RF', 2001], ['HmIP-RF', 2010]]);
+  });
+});
+
+describe('CcuClient XML-RPC transport security', () => {
+  type Endpoint = { port: number; source: string; auth?: unknown; tls?: { allowSelfSigned: boolean; fingerprint256?: string } };
+  const FP = Array.from({ length: 32 }, () => '0A').join(':');
+
+  function client(over: Record<string, unknown>): { ccu: CcuClient; warns: string[] } {
+    const config = resolveConfig({
+      platform: 'HomematicHap',
+      ccuIp: '10.0.0.2',
+      eventServer: { host: '127.0.0.1', port: 9876 },
+      interfaces: { bidcosRf: false, hmIpRf: false, bidcosWired: false, virtualDevices: false, cuxd: false },
+      ...over,
+    } as never);
+    const ccu = new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'lc-tls') });
+    const warns: string[] = [];
+    vi.spyOn(ccu['log'] as unknown as { warn: (...a: unknown[]) => void }, 'warn')
+      .mockImplementation((fmt: string, ...args: unknown[]) => { warns.push([fmt, ...args].map(String).join(' ')); });
+    return { ccu, warns };
+  }
+  const endpoint = (ccu: CcuClient, id: string): Endpoint =>
+    (ccu as unknown as { rpcEndpoint(id: string): Endpoint }).rpcEndpoint(id);
+  const AUTH = { ccuAuth: { enabled: true, username: 'u', password: 'p' } };
+
+  it('useTls: TLS ports 42001/42010/49292 with credentials and the configured certificate rule', () => {
+    const { ccu } = client({ ...AUTH, useTls: true, tlsCertFingerprint: FP.replace(/:/g, '').toLowerCase() });
+    expect(endpoint(ccu, 'BidCos-RF')).toMatchObject({ port: 42001, source: 'TLS default', auth: { username: 'u' }, tls: { allowSelfSigned: false, fingerprint256: FP } });
+    expect(endpoint(ccu, 'HmIP-RF').port).toBe(42010);
+    expect(endpoint(ccu, 'VirtualDevices').port).toBe(49292);
+  });
+
+  it('useTls: an interfacePorts override is used as a TLS port, never as plain HTTP', () => {
+    const { ccu } = client({ ...AUTH, useTls: true, tlsAllowSelfSigned: true, interfacePorts: { 'HmIP-RF': 2010 } });
+    expect(endpoint(ccu, 'HmIP-RF')).toMatchObject({ port: 2010, source: 'config override', tls: { allowSelfSigned: true } });
+  });
+
+  it('useTls: CUxD (no TLS port) is reached without credentials, with a warning', () => {
+    const { ccu, warns } = client({ ...AUTH, useTls: true });
+    const e = endpoint(ccu, 'CUxD');
+    expect(e).toMatchObject({ port: 8701 });
+    expect(e.auth).toBeUndefined();
+    expect(e.tls).toBeUndefined();
+    expect(warns.join('\n')).toMatch(/has no TLS XML-RPC port.*without the ccuAuth credentials CUxD/);
+  });
+
+  it('without useTls: plain ports with credentials, and exactly one warning across restarts', async () => {
+    const { ccu, warns } = client(AUTH);
+    expect(endpoint(ccu, 'BidCos-RF')).toMatchObject({ port: 2001, auth: { username: 'u' } });
+    expect(endpoint(ccu, 'BidCos-RF').tls).toBeUndefined();
+    vi.spyOn(ccu.api, 'listInterfaces').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'listDevices').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'logout').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    for (let i = 0; i < 2; i++) {
+      await ccu.start();
+      await ccu.stop();
+    }
+    expect(warns.filter((w) => /ccuAuth is set without useTls/.test(w))).toHaveLength(1);
+  });
+
+  it('useTls: the JSON API gets the same certificate agent; none without useTls', () => {
+    const agentOf = (c: CcuClient): unknown => (c.api as unknown as { tlsAgent?: unknown }).tlsAgent;
+    const pinned = client({ ...AUTH, useTls: true, tlsCertFingerprint: FP }).ccu;
+    expect((agentOf(pinned) as { constructor: { name: string } }).constructor.name).toBe('PinnedAgent');
+    const allow = client({ ...AUTH, useTls: true, tlsAllowSelfSigned: true }).ccu;
+    expect((agentOf(allow) as { options: { rejectUnauthorized: boolean } }).options.rejectUnauthorized).toBe(false);
+    expect(agentOf(client(AUTH).ccu)).toBeUndefined();
+  });
+
+  it('useTls without pin or tlsAllowSelfSigned: ccuAuth is never sent over the JSON API, one clear error at start', async () => {
+    const config = resolveConfig({
+      platform: 'HomematicHap', ccuIp: '192.0.2.1', useTls: true, ...AUTH,
+      eventServer: { host: '127.0.0.1', port: 9876 },
+      interfaces: { bidcosRf: false, hmIpRf: false, bidcosWired: false, virtualDevices: false, cuxd: false },
+    } as never);
+    const ccu = new CcuClient({ config, log: new PrefixedLogger(makeLog(), 'lc-refuse') });
+    const errors: string[] = [];
+    vi.spyOn(ccu['log'] as unknown as { error: (...a: unknown[]) => void }, 'error')
+      .mockImplementation((fmt: string) => { errors.push(fmt); });
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    // Real JSON client: the refusing agent fails before any socket is opened.
+    const err = await ccu.api.call('Interface.listInterfaces').catch((e: Error & { cause?: Error }) => e);
+    expect((err as Error & { cause?: Error }).cause?.message).toBe(TLS_CREDENTIALS_REFUSED);
+    for (let i = 0; i < 2; i++) {
+      await ccu.start();
+      await ccu.stop();
+    }
+    expect(errors.filter((e) => e === TLS_CREDENTIALS_REFUSED)).toHaveLength(1);
+  });
+
+  it('without auth: no credentials and no warning', async () => {
+    const { ccu, warns } = client({});
+    expect(endpoint(ccu, 'HmIP-RF').auth).toBeUndefined();
+    vi.spyOn(ccu.api, 'listInterfaces').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'listDevices').mockResolvedValue([]);
+    vi.spyOn(ccu.api, 'logout').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'start').mockResolvedValue(undefined);
+    vi.spyOn(ccu.eventServer, 'stop').mockResolvedValue(undefined);
+    await ccu.start();
+    await ccu.stop();
+    expect(warns).toEqual([]);
   });
 });

@@ -30,6 +30,10 @@ export declare class CcuClient extends EventEmitter {
     private readonly datapointListeners;
     private readonly config;
     private readonly log;
+    /** ccuAuth credentials: JSON-API login and HTTP Basic on the XML-RPC ports. */
+    private readonly auth;
+    private plainAuthWarned;
+    private tlsRefusalLogged;
     private watchdogTimer;
     private lastEventAt;
     private started;
@@ -39,6 +43,16 @@ export declare class CcuClient extends EventEmitter {
     private readonly addressInterface;
     constructor(opts: CcuClientOptions);
     start(): Promise<void>;
+    /**
+     * Port, TLS and credentials for one interface. With useTls the CCU's TLS
+     * ports (42001/42010/42000/49292, or the interfacePorts override) are used
+     * and credentials never go over plain HTTP: an interface without a TLS
+     * port (CUxD) is reached without them. Without useTls: override >
+     * listInterfaces discovery (non-loopback URLs only) > built-in default.
+     */
+    private rpcEndpoint;
+    private tlsOptions;
+    private warnPlainAuthOnce;
     private refreshInterfacePorts;
     private refreshAddressInterfaceMap;
     stop(): Promise<void>;

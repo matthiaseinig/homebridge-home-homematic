@@ -842,9 +842,9 @@ function viewSettings(host) {
       <h6>XML-RPC port overrides</h6>
       <p class="hgui-meta">Leave blank to auto-discover ports via <code>Interface.listInterfaces</code>.
          Set explicitly only when the auto-discovered port is not reachable from this host (e.g. blocked by the CCU's firewall).
-         RaspberryMatic external defaults: <code>32001 / 32010 / 39292</code>; legacy localhost defaults: <code>2001 / 2010 / 9292</code>.</p>
+         External ports (from another host): <code>2001 / 2010 / 9292</code>; <code>32001 / 32010 / 39292</code> only listen on the CCU itself.</p>
       <div class="row g-2">
-        ${[['BidCos-RF','32001'],['HmIP-RF','32010'],['BidCos-Wired','32000'],['VirtualDevices','39292'],['CUxD','8701']]
+        ${[['BidCos-RF','2001'],['HmIP-RF','2010'],['BidCos-Wired','2000'],['VirtualDevices','9292'],['CUxD','8701']]
           .map(([k,ph]) => `
             <div class="col-md-3">
               <label class="form-label">${h(k)}</label>

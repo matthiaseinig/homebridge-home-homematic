@@ -1,7 +1,7 @@
 {
   "name": "homebridge-homematic-hap",
   "displayName": "HomeMatic HAP",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Homebridge plugin for HomeMatic / HomematicIP devices with a full configuration GUI. Spiritual successor to thkl/hap-homematic, running as a Homebridge plugin instead of a CCU addon. Imports existing hap-homematic configurations.",
   "type": "module",
   "license": "Apache-2.0",
@@ -43,7 +43,8 @@
     "config.schema.json",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "scripts/ccu-cert-fingerprint.mjs"
   ],
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && node ./node_modules/typescript/bin/tsc && npm run build:ui",

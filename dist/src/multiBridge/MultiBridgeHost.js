@@ -99,9 +99,10 @@ export class MultiBridgeHost {
                 return { devices, variables };
             }
             catch (err) {
-                log.warn('CCU not ready (attempt %d): %s. No bridge is published until it is; retrying in %d s', attempt, err.message, config.retrySeconds);
+                const delaySeconds = retryDelaySeconds(config.retrySeconds, attempt);
+                log.warn('CCU not ready (attempt %d): %s. No bridge is published until it is; retrying in %d s', attempt, err.message, delaySeconds);
                 await ccu.stop().catch((e) => log.debug('CCU stop after failed start: %s', e.message));
-                await this.sleep(config.retrySeconds * 1000);
+                await this.sleep(delaySeconds * 1000);
             }
         }
         return undefined;
@@ -192,6 +193,19 @@ export class MultiBridgeHost {
             }
         }
     }
+}
+/** Longest wait between two CCU connection attempts (unless retrySeconds is longer). */
+export const MAX_RETRY_DELAY_SECONDS = 300;
+/**
+ * Exponential backoff for CCU connection attempts: retrySeconds after the
+ * first failure, doubling per attempt, capped at MAX_RETRY_DELAY_SECONDS
+ * (or retrySeconds when that is configured higher). Keeps a broken CCU
+ * setup from hammering the CCU every few seconds for hours.
+ */
+export function retryDelaySeconds(retrySeconds, attempt) {
+    const cap = Math.max(retrySeconds, MAX_RETRY_DELAY_SECONDS);
+    const exponent = Math.min(Math.max(attempt - 1, 0), 16);
+    return Math.min(retrySeconds * 2 ** exponent, cap);
 }
 function withTimeout(p, ms) {
     return new Promise((resolve, reject) => {

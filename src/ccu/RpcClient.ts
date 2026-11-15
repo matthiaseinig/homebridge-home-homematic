@@ -5,10 +5,12 @@
  * EventServer receives push events.
  */
 
+import { Buffer } from 'node:buffer';
 import { createConnection } from 'node:net';
 import { createRequire } from 'node:module';
 import type { PrefixedLogger } from '../util/logger.js';
 import type { CcuInterfaceId } from '../types.js';
+import { ccuTlsAgent, type CcuTlsOptions } from './ccuTls.js';
 
 /** Default timeout for the pre-init TCP reachability probe. */
 const PROBE_TIMEOUT_MS = 5_000;
@@ -29,6 +31,17 @@ export interface RpcClientOptions {
   callbackUrl: string;
   /** Identifier the CCU will tag callbacks with. */
   callbackId: string;
+  /**
+   * HTTP Basic credentials for the CCU's XML-RPC ports. Required when the
+   * CCU has "Authentication" enabled (Settings, Control panel, Security):
+   * every RPC port then answers 401 without them.
+   */
+  auth?: { username: string; password: string };
+  /**
+   * Talk HTTPS to the port (a CCU TLS XML-RPC port such as 42001). Without
+   * it the port is plain HTTP, and `auth` crosses the network readable.
+   */
+  tls?: CcuTlsOptions;
   log: PrefixedLogger;
   /**
    * Inject the underlying transport for tests. The default uses
@@ -62,6 +75,8 @@ export class RpcClient {
   private readonly port: number;
   private readonly callbackUrl: string;
   private readonly callbackId: string;
+  private readonly auth: { username: string; password: string } | undefined;
+  private readonly tls: CcuTlsOptions | undefined;
   private readonly log: PrefixedLogger;
   private transport: RpcTransport | undefined;
   private readonly transportFactory?: RpcTransport;
@@ -74,6 +89,8 @@ export class RpcClient {
     this.port = opts.port ?? INTERFACE_PORTS[opts.interfaceId];
     this.callbackUrl = opts.callbackUrl;
     this.callbackId = opts.callbackId;
+    this.auth = opts.auth;
+    this.tls = opts.tls;
     this.log = opts.log;
     this.transportFactory = opts.transport;
     this.skipProbe = opts.skipProbe ?? false;
@@ -93,17 +110,25 @@ export class RpcClient {
     // homematic-xmlrpc is published as CommonJS; under ESM dynamic import
     // its real `createClient` shows up on `.default`, not directly on the
     // module namespace. Same gotcha we hit with iconv-lite earlier.
-    type CreateClientFn = (opts: { host: string; port: number }) => {
+    type CreateClientFn = (opts: {
+      host: string;
+      port: number;
+      headers?: Record<string, string>;
+      agent?: unknown;
+    }) => {
       methodCall(method: string, params: unknown[],
         cb: (err: Error | null, value: unknown) => void): void;
     };
     const mod = (await import('homematic-xmlrpc')) as {
       createClient?: CreateClientFn;
-      default?: { createClient?: CreateClientFn };
+      createSecureClient?: CreateClientFn;
+      default?: { createClient?: CreateClientFn; createSecureClient?: CreateClientFn };
     };
-    const createClient = mod.createClient ?? mod.default?.createClient;
+    const createClient = this.tls
+      ? mod.createSecureClient ?? mod.default?.createSecureClient
+      : mod.createClient ?? mod.default?.createClient;
     if (typeof createClient !== 'function') {
-      throw new RpcError('homematic-xmlrpc module did not expose createClient');
+      throw new RpcError(`homematic-xmlrpc module did not expose ${this.tls ? 'createSecureClient' : 'createClient'}`);
     }
     // RaspberryMatic responses occasionally wrap data in non-spec
     // elements like <META>...</META>. The bundled deserializer rejects
@@ -111,7 +136,14 @@ export class RpcClient {
     // Patch its onClosetag once to silently swallow unknown wrapping
     // tags so legitimate non-spec metadata doesn't poison the response.
     patchDeserializerForUnknownTags();
-    const client = createClient({ host: this.host, port: this.port });
+    // Set the Authorization header ourselves: the library's basic_auth path
+    // uses the deprecated `new Buffer()`. No header at all without auth.
+    const client = createClient({
+      host: this.host,
+      port: this.port,
+      ...(this.auth ? { headers: { Authorization: basicAuthHeader(this.auth) } } : {}),
+      ...(this.tls ? { agent: ccuTlsAgent(this.tls, this.auth !== undefined) } : {}),
+    });
     this.transport = {
       call: (method, params) =>
         new Promise((resolve, reject) => {
@@ -121,7 +153,7 @@ export class RpcClient {
               const detail = e.faultString
                 ? `${e.faultString}${e.faultCode !== undefined ? ` (${e.faultCode})` : ''}`
                 : e.message ?? 'unknown error';
-              reject(new RpcError(`${method} failed: ${detail}`, err));
+              reject(new RpcError(`${method} failed: ${detail}${this.nonXmlRpcHint(detail)}${this.tlsHint(detail)}`, err));
             } else {
               resolve(value);
             }
@@ -130,6 +162,31 @@ export class RpcClient {
       close: async () => undefined,
     };
     return this.transport;
+  }
+
+  /**
+   * homematic-xmlrpc ignores the HTTP status, so a CCU 401 page (HTML) only
+   * surfaces as "Invalid XML-RPC message". Say what that usually means.
+   */
+  private nonXmlRpcHint(detail: string): string {
+    if (!/Invalid XML-RPC message|Not a method response|Unknown XML-RPC tag/.test(detail)) {
+      return '';
+    }
+    return this.auth
+      ? ' (the CCU did not answer with XML-RPC; most likely HTTP 401: the ccuAuth user '
+        + 'was rejected for XML-RPC, or this port is not an XML-RPC port)'
+      : ' (the CCU did not answer with XML-RPC; most likely HTTP 401 because CCU '
+        + 'authentication is enabled: enable ccuAuth with a CCU user)';
+  }
+
+  /** A self-signed CCU certificate needs an explicit setting. */
+  private tlsHint(detail: string): string {
+    if (!this.tls || !/self[- ]signed|unable to verify|certificate/i.test(detail)) {
+      return '';
+    }
+    return this.tls.fingerprint256
+      ? ' (check tlsCertFingerprint against the CCU certificate)'
+      : ' (the CCU certificate is self-signed: set tlsCertFingerprint to pin it, or tlsAllowSelfSigned)';
   }
 
   /** Subscribe to events. Idempotent. */
@@ -219,6 +276,11 @@ export class RpcClient {
   isSubscribed(): boolean {
     return this.subscribed;
   }
+}
+
+/** `Basic <base64(user:pass)>`, the scheme the CCU's RPC ports ask for. Exported for tests. */
+export function basicAuthHeader(auth: { username: string; password: string }): string {
+  return `Basic ${Buffer.from(`${auth.username}:${auth.password}`, 'utf8').toString('base64')}`;
 }
 
 const KNOWN_XMLRPC_TAGS: ReadonlySet<string> = new Set([

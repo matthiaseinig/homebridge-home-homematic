@@ -132,3 +132,19 @@ describe('resolveConfig', () => {
     });
   });
 });
+
+describe('resolveConfig TLS certificate settings', () => {
+  const base = { platform: 'HomematicHap', ccuIp: '10.0.0.2' };
+  it('defaults to verifying certificates', () => {
+    expect(resolveConfig(base).tls).toEqual({ allowSelfSigned: false });
+  });
+  it('normalises the fingerprint and keeps tlsAllowSelfSigned', () => {
+    const r = resolveConfig({ ...base, tlsAllowSelfSigned: true, tlsCertFingerprint: 'ab'.repeat(32) });
+    expect(r.tls).toEqual({ allowSelfSigned: true, fingerprint256: Array.from({ length: 32 }, () => 'AB').join(':') });
+  });
+  it('treats an empty fingerprint as unset and rejects a malformed one', () => {
+    expect(resolveConfig({ ...base, tlsCertFingerprint: '' }).tls).toEqual({ allowSelfSigned: false });
+    expect(() => resolveConfig({ ...base, tlsCertFingerprint: 'abc' })).toThrow(ConfigError);
+    expect(() => resolveConfig({ ...base, tlsCertFingerprint: 42 } as never)).toThrow(/tlsCertFingerprint/);
+  });
+});

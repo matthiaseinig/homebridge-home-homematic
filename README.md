@@ -71,10 +71,12 @@ is stable for the first time. The core:
   this lineage to use the modern API* — the predecessors all used the
   legacy `/tclrega.exe` ReGa-script endpoint, which has a per-user ACL
   hole that returns empty device lists on RaspberryMatic.
-- Runtime XML-RPC port discovery via `Interface.listInterfaces` so
-  RaspberryMatic's external `+30000` port offset is picked up
-  automatically; tolerant against non-spec `<META>` wrapper tags some
-  HmIP responses include.
+- Runtime XML-RPC port discovery via `Interface.listInterfaces`
+  (CCU-internal loopback ports such as 32001/32010 are ignored for a
+  remote CCU, which leaves the external 2001/2010/9292); tolerant
+  against non-spec `<META>` wrapper tags some HmIP responses include.
+- With CCU "Authentication" enabled, the `ccuAuth` user is also sent as
+  HTTP Basic auth on the XML-RPC ports, which then answer 401 without it.
 - **18 service types** covering common use cases: Switch / Outlet /
   Lightbulb · Dimmer · ColorTempDimmer (tunable white) · RGB light
   (continuous + HmIP-BSL discrete) · Window covering · Window covering

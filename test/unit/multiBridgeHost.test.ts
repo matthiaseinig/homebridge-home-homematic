@@ -14,7 +14,7 @@ import * as path from 'node:path';
 import { format } from 'node:util';
 import type { HAP, PublishInfo } from 'homebridge';
 import type { CcuClient } from '../../src/ccu/CcuClient.js';
-import { MultiBridgeHost, hapPublisher, type BridgePublisher } from '../../src/multiBridge/MultiBridgeHost.js';
+import { MultiBridgeHost, MAX_RETRY_DELAY_SECONDS, hapPublisher, retryDelaySeconds, type BridgePublisher } from '../../src/multiBridge/MultiBridgeHost.js';
 import { buildBridge, bridgeUuidFor, type HapBridge } from '../../src/multiBridge/bridgeBuilder.js';
 import { identityProblem, persistFileName, persistIdentityStore, type IdentityStore } from '../../src/multiBridge/identityStore.js';
 import { isTcpPortFree } from '../../src/multiBridge/portProbe.js';
@@ -437,16 +437,42 @@ describe('MultiBridgeHost', () => {
     const started = h.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(publisher.publish).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(5000); // attempt 2: no devices
+    await vi.advanceTimersByTimeAsync(5000); // attempt 2 after 5 s: no devices
     expect(publisher.publish).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(5000); // attempt 3: variables fail
+    await vi.advanceTimersByTimeAsync(9999); // backoff: attempt 3 only after 10 s
+    expect(ccu.start).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1); // attempt 3: variables fail
     expect(publisher.publish).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(5000); // attempt 4: ok
+    await vi.advanceTimersByTimeAsync(20000); // attempt 4 after 20 s: ok
     await started;
     expect(publisher.publish).toHaveBeenCalledTimes(1);
     expect(ccu.start).toHaveBeenCalledTimes(4);
     expect(ccu.stop).toHaveBeenCalledTimes(3);
     await h.stop();
+  });
+
+  it('backs off exponentially between CCU attempts, capped at 5 minutes', () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 50].map((a) => retryDelaySeconds(30, a))).toEqual([30, 60, 120, 240, 300, 300, 300, 300]);
+    expect(MAX_RETRY_DELAY_SECONDS).toBe(300);
+    // A configured interval above the cap is kept as is.
+    expect([1, 2, 9].map((a) => retryDelaySeconds(600, a))).toEqual([600, 600, 600]);
+    expect(retryDelaySeconds(5, 0)).toBe(5);
+  });
+
+  it('logs the backed-off delay and stops the CCU (ending its session) after every failed attempt', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { h, ccu, log } = host(multiConfig([entry()]));
+    ccu.isLive.mockReturnValue(false);
+    const started = h.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10000);
+    const warns = fmt(vi.mocked(log.warn).mock.calls).filter((l) => /CCU not ready/.test(l));
+    expect(warns).toHaveLength(3);
+    expect(warns.map((l) => l.match(/retrying in (\d+) s/)?.[1])).toEqual(['5', '10', '20']);
+    expect(ccu.stop).toHaveBeenCalledTimes(3);
+    await h.stop();
+    await started;
   });
 
   it('stop() while waiting for the CCU ends start() without publishing', async () => {
