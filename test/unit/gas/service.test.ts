@@ -106,6 +106,23 @@ describe('GasService polling', () => {
     await stop(svc);
   });
 
+  it('shows a device that does not answer as unreachable, not as CCU not readable, and sends no paramset request', async () => {
+    const { ccu, log, published, make, stop } = await setup();
+    const svc = make();
+    await svc.start();
+    await svc.ready;
+    ccu.unreach = true;
+    const before = ccu.calls.length;
+    ccu.handler = (c) => (c.method === 'Interface.getParamset' ? { error: { code: 501, message: 'XML-RPC: general error' } } : undefined);
+    await svc.pollOnce();
+    await svc.pollOnce();
+    expect(published.at(-1)!.GasReachable).toBe(false);
+    expect(log.lines.filter((l) => l.includes('CCU not readable'))).toHaveLength(0);
+    const sent = ccu.calls.slice(before).map((c) => `${c.method}:${String(c.params.valueKey ?? '')}`);
+    expect(sent).toEqual(['Interface.getValue:UNREACH', 'Interface.getValue:UNREACH']);
+    await stop(svc);
+  });
+
   it('holds a read of 0, re-bases on a glitch, counts a real reset and drops implausible jumps', async () => {
     const { ccu, t, published, log, make, stop } = await setup();
     ccu.values = counter(200);

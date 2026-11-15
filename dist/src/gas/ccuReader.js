@@ -29,7 +29,7 @@ export function assertAllowed(method, params) {
     if (method === 'Interface.getParamset' && params.paramsetKey !== 'VALUES') {
         throw new GasCcuError('refused', 'only the VALUES paramset may be read');
     }
-    if (method === 'Interface.getParamsetDescription' && params.paramsetType !== 'VALUES') {
+    if (method === 'Interface.getParamsetDescription' && params.paramsetKey !== 'VALUES') {
         throw new GasCcuError('refused', 'only the VALUES paramset may be described');
     }
 }
@@ -143,7 +143,7 @@ export class GasCcuReader {
     }
     /** `Interface.getParamsetDescription` of the `VALUES` paramset of one channel. */
     describeValues(iface, address) {
-        return this.call('Interface.getParamsetDescription', { interface: iface, address, paramsetType: 'VALUES' });
+        return this.call('Interface.getParamsetDescription', { interface: iface, address, paramsetKey: 'VALUES' });
     }
 }
 /** A CCU number: a finite number or a numeric string; anything else is undefined. */

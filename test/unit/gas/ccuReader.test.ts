@@ -22,12 +22,23 @@ describe('gas CCU allow-list', () => {
     expect(Object.isFrozen(GAS_CCU_METHODS)).toBe(true);
   });
 
+  it('describes the VALUES paramset with the paramsetKey the CCU JSON API expects', async () => {
+    const ccu = await fakeCcu();
+    const api = sharedSession(ccu.port);
+    const r = reader(api, () => T0);
+    await r.describeValues(IFACE, `${ADDRESS}:1`);
+    const call = ccu.calls.find((c) => c.method === 'Interface.getParamsetDescription')!;
+    expect(call.params).toMatchObject({ interface: IFACE, address: `${ADDRESS}:1`, paramsetKey: 'VALUES' });
+    expect(call.params).not.toHaveProperty('paramsetType');
+    await api.logout();
+  });
+
   it('refuses every other method and any paramset but VALUES', () => {
     for (const m of ['Interface.setValue', 'Interface.putParamset', 'ReGa.runScript', 'SysVar.setFloat', 'Program.execute', 'Session.login']) {
       expect(() => assertAllowed(m, {}), m).toThrow(GasCcuError);
     }
     expect(() => assertAllowed('Interface.getParamset', { paramsetKey: 'MASTER' })).toThrow(/VALUES/);
-    expect(() => assertAllowed('Interface.getParamsetDescription', { paramsetType: 'MASTER' })).toThrow(/VALUES/);
+    expect(() => assertAllowed('Interface.getParamsetDescription', { paramsetKey: 'MASTER' })).toThrow(/VALUES/);
     expect(() => assertAllowed('Interface.getParamset', { paramsetKey: 'VALUES' })).not.toThrow();
   });
 
@@ -47,7 +58,7 @@ describe('gas CCU allow-list', () => {
       expect(call.httpMethod).toBe('POST');
       expect(call.path).toBe('/api/homematic.cgi');
       if (call.method === 'Interface.getParamset') expect(call.params.paramsetKey).toBe('VALUES');
-      if (call.method === 'Interface.getParamsetDescription') expect(call.params.paramsetType).toBe('VALUES');
+      if (call.method === 'Interface.getParamsetDescription') expect(call.params.paramsetKey).toBe('VALUES');
     }
     expect(ccu.methods()).not.toContain('Interface.setValue');
   });
