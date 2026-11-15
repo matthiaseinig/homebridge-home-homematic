@@ -37,7 +37,7 @@ export function assertAllowed(method: string, params: Record<string, unknown>): 
   if (method === 'Interface.getParamset' && params.paramsetKey !== 'VALUES') {
     throw new GasCcuError('refused', 'only the VALUES paramset may be read');
   }
-  if (method === 'Interface.getParamsetDescription' && params.paramsetType !== 'VALUES') {
+  if (method === 'Interface.getParamsetDescription' && params.paramsetKey !== 'VALUES') {
     throw new GasCcuError('refused', 'only the VALUES paramset may be described');
   }
 }
@@ -181,7 +181,7 @@ export class GasCcuReader {
 
   /** `Interface.getParamsetDescription` of the `VALUES` paramset of one channel. */
   describeValues(iface: string, address: string): Promise<unknown> {
-    return this.call('Interface.getParamsetDescription', { interface: iface, address, paramsetType: 'VALUES' });
+    return this.call('Interface.getParamsetDescription', { interface: iface, address, paramsetKey: 'VALUES' });
   }
 }
 

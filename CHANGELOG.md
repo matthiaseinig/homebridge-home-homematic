@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.3
+
+- **Gas meter: datapoint description failed on the CCU.** The CCU JSON API
+  expects `paramsetKey` (not `paramsetType`) for
+  `Interface.getParamsetDescription`; the call was rejected with "missing
+  argument (paramsetKey)". Both paramset calls now send `paramsetKey`.
+- **Gas meter: a transmitter that does not answer shows as unreachable.**
+  When channel 0 reports `UNREACH`, the paramset is no longer requested
+  (the CCU answers it with "XML-RPC: general error"), so the status reads
+  "device not answering" instead of "CCU not readable". It is not an auth
+  failure and adds no backoff beyond the normal poll.
+
 ## 1.7.2
 
 - **Remote CCU without TLS used CCU-internal XML-RPC ports.** The CCU's

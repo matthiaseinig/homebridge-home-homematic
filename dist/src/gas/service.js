@@ -152,12 +152,14 @@ export class GasService {
         try {
             const unreach = await this.flag('UNREACH');
             const reachable = unreach === undefined ? undefined : !unreach;
-            const values = await this.reader.getValues(this.settings.iface, this.channelAddress);
-            const lowBattery = await this.flag('LOWBAT');
+            // A device that does not answer makes getParamset fail with a general
+            // error; with UNREACH set the paramset is not requested at all.
+            const values = reachable === false ? undefined : await this.reader.getValues(this.settings.iface, this.channelAddress);
+            const lowBattery = reachable === false ? undefined : await this.flag('LOWBAT');
             if (!r.ccuOk && r.lastError !== undefined)
                 this.log.info('Gas meter: CCU readable again.');
             Object.assign(r, { ccuOk: true, reachable, lowBattery, lastError: undefined });
-            if (reachable === false) {
+            if (values === undefined) {
                 r.flowM3h = undefined;
                 r.counterM3 = undefined;
             }
