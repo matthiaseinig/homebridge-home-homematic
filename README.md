@@ -165,6 +165,42 @@ Applies to the slat blind type and to normal blinds imported with
 `useSlats: true`. Before relying on it, test the tilt on one blind in the
 Home app and, if the slats do not move, switch the mode and restart.
 
+## Gas meter (read-only)
+
+An HM-ES-TX-WM with gas sensor can be published as a read-only `Gas Meter`
+(custom HomeKit service for the companion app) with its own history and an
+optional token-protected LAN API (`/v1/gas/*`). It is read through the
+plugin's existing CCU session (same CCU user, no second client), polled
+every minute, and never written to. Off by default:
+
+```json
+"gas": {
+  "enabled": true,
+  "address": "BidCos-RF.<serial>:1",
+  "calorificValue": 11.2,
+  "zNumber": 0.95,
+  "api": { "bindAddress": "<LAN IP of this host>" }
+}
+```
+
+- Datapoints default to `GAS_ENERGY_COUNTER` (m³) and `GAS_POWER` (m³/h);
+  channel 0 gives `UNREACH` and `LOWBAT`.
+- History: 5 minute rows for 90 days, daily m³ for 10 years, in the
+  Homebridge storage folder. kWh are computed when read from the dated
+  calorific value and Zustandszahl (`factorPeriods`), so a corrected factor
+  applies to past days. `meterReadings` correct only the displayed reading.
+- Placement: on the multi-bridge whose name contains "Keller" if there is
+  one, else on the plugin's own bridge; set `gas.bridge` to `host` or a
+  bridge name to choose.
+- While the gas meter is on, its device is never also mapped as an
+  accessory, and a `POWERMETER_IGL` channel is never published as a power
+  meter Outlet (a warning is logged instead).
+- The API token is created in `homebridge-homematic-hap/gas-api-token` in
+  the Homebridge storage folder (mode 0600) and never logged.
+
+The full contract (UUIDs, valid bits, counter rules, endpoints) is
+[docs/GAS-METER.md](docs/GAS-METER.md).
+
 ## Quick start
 
 Before you start: **create a dedicated CCU user with the *Admin* role**
@@ -198,6 +234,7 @@ src/
 │   ├── EventServer.ts          # local HTTP/XML-RPC for inbound events
 │   ├── xmlRpc.ts               # in-house XML-RPC parser (XXE-safe)
 │   └── CcuClient.ts            # facade owning all of the above
+├── gas/                        # read-only gas meter: polling, history, HomeKit, LAN API
 ├── services/                   # per-channel HAP service adapters
 ├── import/                     # hap-homematic backup importer
 ├── util/                       # logger, storage, address parser, sanitize
@@ -218,6 +255,8 @@ docs/                           # ARCHITECTURE.md, INTEGRATION.md, …
   the service registry pattern, lifecycle.
 - **[docs/IMPORT-FROM-HAP-HOMEMATIC.md](docs/IMPORT-FROM-HAP-HOMEMATIC.md)** —
   step-by-step migration from a running hap-homematic install.
+- **[docs/GAS-METER.md](docs/GAS-METER.md)**: the read-only gas meter,
+  its HomeKit service and LAN API (app contract).
 - **[SECURITY.md](SECURITY.md)** — threat model and reporting.
 
 ## Development

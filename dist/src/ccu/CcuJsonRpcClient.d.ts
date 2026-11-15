@@ -33,10 +33,18 @@ export interface CcuJsonRpcOptions {
     };
     log: PrefixedLogger;
 }
+/**
+ * What went wrong: `auth` the login was rejected, `session` the CCU refused
+ * the call for its session (also with a fresh one, usually missing rights),
+ * `protocol` the CCU answered with another error or no JSON, `network` no
+ * usable HTTP answer.
+ */
+export type JsonRpcErrorKind = 'auth' | 'session' | 'protocol' | 'network';
 export declare class JsonRpcError extends Error {
     readonly code?: number | undefined;
     readonly cause?: unknown | undefined;
-    constructor(message: string, code?: number | undefined, cause?: unknown | undefined);
+    readonly kind: JsonRpcErrorKind;
+    constructor(message: string, code?: number | undefined, cause?: unknown | undefined, kind?: JsonRpcErrorKind);
 }
 /** Raw API surface — exposed for callers that need methods we don't wrap yet. */
 export declare class CcuJsonRpcClient {
@@ -47,17 +55,33 @@ export declare class CcuJsonRpcClient {
     private readonly auth?;
     private readonly log;
     private sessionId;
+    private loginInFlight;
     constructor(opts: CcuJsonRpcOptions);
     /** Drop the cached session id; the next authenticated call will re-login. */
     invalidateSession(): void;
+    /** True while a session id is cached. */
+    get hasSession(): boolean;
+    /**
+     * Log the cached session out (best effort) and forget it. Used on
+     * shutdown, so no session is left open on the CCU until its timeout.
+     */
+    logout(): Promise<void>;
     /**
      * Invoke a JSON-RPC method, automatically attaching `_session_id_` if
-     * authentication is configured. Renews the session once on a 401-style
-     * "session expired" response and retries the call.
+     * authentication is configured. When the CCU refuses the session, it is
+     * logged out and replaced once and the call is retried; when the fresh
+     * session is refused too, that one is logged out as well and the call
+     * fails with kind `session`. Every session this client gives up is logged
+     * out, so none is left open on the CCU.
      */
     call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
     private callOnce;
+    /** Forget `sid` if it is still the cached one and log it out (best effort). Exactly one caller does this per session. */
+    private abandon;
+    /** Mask the password and session ids in a CCU error text, which may echo the request. */
+    private scrub;
     private ensureSession;
+    private login;
     /**
      * One-shot CCU device tree: every device with its channels embedded.
      * Maps RaspberryMatic's `Device.listAllDetail` into our internal shape.

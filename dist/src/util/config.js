@@ -6,6 +6,7 @@
  * refuses to start (per the verified-plugin rule "must not start unless
  * configured").
  */
+import { normalizeGasConfig } from '../gas/config.js';
 import { resolveMultiBridgeConfig } from '../multiBridge/config.js';
 import { DEFAULT_SLAT_WRITE_MODE, SLAT_WRITE_MODES } from '../services/slatWriter.js';
 export class ConfigError extends Error {
@@ -104,11 +105,37 @@ export function resolveConfig(raw) {
         variables,
         programs,
         hapHomematicIdentity: raw.hapHomematicIdentity === true,
+        ...normalizeGas(raw.gas),
     };
-    if (raw.multiBridge === undefined) {
-        return base;
+    const resolved = raw.multiBridge === undefined ? base : withMultiBridge(base, raw);
+    return withFreeGasPort(resolved, raw);
+}
+function normalizeGas(raw) {
+    const { config, errors } = normalizeGasConfig(raw);
+    return { gas: config, gasErrors: errors };
+}
+/** The gas API must not take the event server's, the host bridge's or a multi-bridge's port. */
+function withFreeGasPort(resolved, raw) {
+    const api = resolved.gas.api;
+    if (!api) {
+        return resolved;
     }
-    return withMultiBridge(base, raw);
+    const hostPort = raw._bridge?.port;
+    const taken = new Set([
+        resolved.eventServer.port,
+        hostPort,
+        ...(resolved.multiBridge?.bridges ?? []).map((b) => b.port),
+    ]);
+    if (!taken.has(api.port)) {
+        return resolved;
+    }
+    const { api: _dropped, ...gas } = resolved.gas;
+    return {
+        ...resolved,
+        gas,
+        gasErrors: [...resolved.gasErrors,
+            `gas.api.port ${api.port} is used by the event server or a bridge; the gas API is off`],
+    };
 }
 /**
  * Multi-bridge mode: the block's own mapping lists must be empty (every

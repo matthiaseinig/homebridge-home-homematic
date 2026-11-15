@@ -7,6 +7,7 @@
 
 import type { PlatformConfig } from 'homebridge';
 import type { SlatWriteMode } from './services/slatWriter.js';
+import type { GasSettings } from './gas/config.js';
 
 export type CcuInterfaceId =
   | 'BidCos-RF'
@@ -63,6 +64,10 @@ export interface ResolvedConfig {
    * union of the *enabled* bridges' mappings (for interface pruning only).
    */
   multiBridge?: MultiBridgeConfig;
+  /** The read-only gas meter (`gas` block); `enabled` false when absent or invalid. */
+  gas: GasSettings;
+  /** Problems found in the `gas` block, logged at startup (never fatal for the block). */
+  gasErrors: string[];
 }
 
 export type MdnsAdvertiser = 'ciao' | 'bonjour-hap' | 'avahi' | 'resolved';
@@ -150,7 +155,8 @@ export interface ProgramMapping {
 
 /** Shape persisted on `accessory.context`, restored on Homebridge restart. */
 export interface AccessoryContext {
-  kind: 'channel' | 'variable' | 'program';
+  /** `gas`: the read-only gas meter of the `gas` block. */
+  kind: 'channel' | 'variable' | 'program' | 'gas';
   /** Stable identifier (channel address, variable name, or program name). */
   id: string;
   /** Service registry key chosen for this accessory. */
@@ -183,6 +189,8 @@ export interface RawConfig extends PlatformConfig {
   variables?: VariableMapping[];
   programs?: ProgramMapping[];
   multiBridge?: RawMultiBridgeConfig;
+  /** Read-only gas meter; validated by gas/config.ts. */
+  gas?: unknown;
 }
 
 export interface RawMultiBridgeConfig {

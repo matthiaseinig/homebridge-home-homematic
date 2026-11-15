@@ -24,6 +24,9 @@ export declare class HomematicPlatform implements DynamicPlatformPlugin {
     private devicesMemo;
     private variablesMemo;
     private readonly multiBridgeHost;
+    private readonly gas;
+    /** Where the gas meter accessory goes; undefined: not published (no gas meter or a placement error). */
+    private readonly gasPlacement;
     constructor(log: Logging, config: PlatformConfig, api: API);
     configureAccessory(accessory: PlatformAccessory): void;
     /** Public for the homebridge-ui server to query CCU on demand. */
@@ -33,6 +36,14 @@ export declare class HomematicPlatform implements DynamicPlatformPlugin {
     private attachChannel;
     private attachVariable;
     private attachProgram;
+    /**
+     * Start the gas meter (polling, history, API) and, when it is placed on
+     * the host bridge, attach its platform accessory. Returns the accessory
+     * UUID when the gas meter lives on the host bridge.
+     */
+    private startGas;
+    /** A cached host gas accessory whose gas meter now lives on a multi-bridge (or is off) is removed. */
+    private dropMovedGasAccessory;
     private fetchChannel;
     /**
      * Accessory UUID. With `hapHomematicIdentity` and a `uuidSeed` from the

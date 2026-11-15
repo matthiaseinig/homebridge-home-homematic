@@ -7,6 +7,7 @@
  * configured").
  */
 
+import { normalizeGasConfig, type GasSettings } from '../gas/config.js';
 import { resolveMultiBridgeConfig } from '../multiBridge/config.js';
 import { DEFAULT_SLAT_WRITE_MODE, SLAT_WRITE_MODES, type SlatWriteMode } from '../services/slatWriter.js';
 import type {
@@ -127,11 +128,39 @@ export function resolveConfig(raw: RawConfig): ResolvedConfig {
     variables,
     programs,
     hapHomematicIdentity: raw.hapHomematicIdentity === true,
+    ...normalizeGas(raw.gas),
   };
-  if (raw.multiBridge === undefined) {
-    return base;
+  const resolved = raw.multiBridge === undefined ? base : withMultiBridge(base, raw);
+  return withFreeGasPort(resolved, raw);
+}
+
+function normalizeGas(raw: unknown): { gas: GasSettings; gasErrors: string[] } {
+  const { config, errors } = normalizeGasConfig(raw);
+  return { gas: config, gasErrors: errors };
+}
+
+/** The gas API must not take the event server's, the host bridge's or a multi-bridge's port. */
+function withFreeGasPort(resolved: ResolvedConfig, raw: RawConfig): ResolvedConfig {
+  const api = resolved.gas.api;
+  if (!api) {
+    return resolved;
   }
-  return withMultiBridge(base, raw);
+  const hostPort = (raw as { _bridge?: { port?: unknown } })._bridge?.port;
+  const taken = new Set<unknown>([
+    resolved.eventServer.port,
+    hostPort,
+    ...(resolved.multiBridge?.bridges ?? []).map((b) => b.port),
+  ]);
+  if (!taken.has(api.port)) {
+    return resolved;
+  }
+  const { api: _dropped, ...gas } = resolved.gas;
+  return {
+    ...resolved,
+    gas,
+    gasErrors: [...resolved.gasErrors,
+      `gas.api.port ${api.port} is used by the event server or a bridge; the gas API is off`],
+  };
 }
 
 /**

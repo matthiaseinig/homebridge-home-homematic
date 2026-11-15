@@ -9,6 +9,8 @@
  *   shutdown             — stop CCU client (event server + RPC subs)
  */
 import { CcuClient } from './ccu/CcuClient.js';
+import { GasMeter } from './gas/GasMeter.js';
+import { gasMappingConflict, resolveGasPlacement } from './gas/placement.js';
 import { findProgramServiceByKey, findServiceByKey, findVariableServiceByKey, pickVariableService, PROGRAM_SERVICE_DEFINITIONS, } from './services/registry.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
 import { MultiBridgeHost } from './multiBridge/MultiBridgeHost.js';
@@ -31,6 +33,9 @@ export class HomematicPlatform {
     devicesMemo;
     variablesMemo;
     multiBridgeHost;
+    gas;
+    /** Where the gas meter accessory goes; undefined: not published (no gas meter or a placement error). */
+    gasPlacement;
     constructor(log, config, api) {
         this.api = api;
         this.Service = api.hap.Service;
@@ -49,7 +54,34 @@ export class HomematicPlatform {
             throw err;
         }
         this.ccu = new CcuClient({ config: this.resolved, log: this.log.child('ccu') });
+        const gasLog = this.log.child('gas');
+        for (const e of this.resolved.gasErrors) {
+            gasLog.error('Config: %s', e);
+        }
+        if (this.resolved.gas.enabled) {
+            this.gas = new GasMeter({
+                settings: this.resolved.gas,
+                hap: api.hap,
+                session: this.ccu.api,
+                ccu: {
+                    host: this.resolved.ccuIp,
+                    username: this.resolved.ccuAuth.enabled ? this.resolved.ccuAuth.username : undefined,
+                    password: this.resolved.ccuAuth.enabled ? this.resolved.ccuAuth.password : undefined,
+                },
+                storageRoot: this.storage.rootPath(),
+                log: gasLog,
+            });
+            const placed = resolveGasPlacement(this.resolved.gas.bridge, this.resolved.multiBridge);
+            if ('error' in placed) {
+                gasLog.error('Config: %s', placed.error);
+            }
+            else {
+                this.gasPlacement = placed.placement;
+            }
+        }
         if (this.resolved.multiBridge) {
+            const gas = this.gas;
+            const gasBridge = this.gasPlacement?.kind === 'bridge' ? this.gasPlacement.name : undefined;
             this.multiBridgeHost = new MultiBridgeHost({
                 hap: api.hap,
                 ccu: this.ccu,
@@ -57,6 +89,10 @@ export class HomematicPlatform {
                 log: this.log.child('multi'),
                 version: PLUGIN_VERSION,
                 identityStore: persistIdentityStore(api.user.persistPath()),
+                gas: this.resolved.gas,
+                extraAccessories: gas && gasBridge !== undefined
+                    ? (entry) => (entry.name === gasBridge ? [gas.createBridgedAccessory()] : [])
+                    : undefined,
             });
         }
         this.api.on('didFinishLaunching', () => {
@@ -83,11 +119,17 @@ export class HomematicPlatform {
         if (!this.resolved || !this.ccu) {
             return;
         }
+        // The gas meter is polled through the JSON-RPC session; it starts before
+        // (and independently of) the XML-RPC event subscriptions.
+        const gasUuid = await this.startGas();
         if (this.multiBridgeHost) {
             // The host publishes its own HAP bridges; this block's own (child)
-            // bridge carries no accessories. Cached ones are left untouched.
-            if (this.cachedAccessories.size > 0) {
-                this.log.warn('Multi-bridge mode ignores %d cached accessories of this block', this.cachedAccessories.size);
+            // bridge carries no accessories, except the gas meter when it is
+            // placed on the host. Other cached ones are left untouched.
+            this.dropMovedGasAccessory(gasUuid);
+            const ignored = [...this.cachedAccessories.keys()].filter((uuid) => uuid !== gasUuid).length;
+            if (ignored > 0) {
+                this.log.warn('Multi-bridge mode ignores %d cached accessories of this block', ignored);
             }
             await this.multiBridgeHost.start();
             return;
@@ -97,7 +139,16 @@ export class HomematicPlatform {
         this.log.success('Connected to CCU at %s', this.resolved.ccuIp);
         // Materialize each channel/variable/program from config.
         const seen = new Set();
+        if (gasUuid !== undefined) {
+            seen.add(gasUuid);
+        }
         for (const mapping of this.resolved.channels) {
+            const conflict = gasMappingConflict(this.resolved.gas, mapping);
+            if (conflict) {
+                // The gas meter device address is not logged.
+                this.log.warn('Gas meter mode: skipping a channel mapping (%s): %s', mapping.service, conflict);
+                continue;
+            }
             try {
                 const uuid = this.accessoryUuid(`channel:${mapping.address}`, mapping.uuidSeed);
                 seen.add(uuid);
@@ -143,6 +194,14 @@ export class HomematicPlatform {
         }
     }
     async shutdown() {
+        if (this.gas) {
+            try {
+                await this.gas.stop();
+            }
+            catch (err) {
+                this.log.warn('Gas meter stop failed: %s', err.message);
+            }
+        }
         if (this.multiBridgeHost) {
             await this.multiBridgeHost.stop();
             return;
@@ -172,6 +231,10 @@ export class HomematicPlatform {
             throw new Error(`Unknown service: ${mapping.service}`);
         }
         const channel = await this.fetchChannel(address, mapping.name);
+        const conflict = gasMappingConflict(this.resolved?.gas, mapping, channel.type);
+        if (conflict) {
+            throw new Error(`gas meter mode: ${conflict}`);
+        }
         // mapping.name is the user-customised HomeKit display name (set in the
         // GUI or imported from hap-homematic); see channelDisplayName.
         const displayName = channelDisplayName(mapping, channel);
@@ -258,6 +321,48 @@ export class HomematicPlatform {
         const handler = def.build(ctx);
         handler.attach(name);
         this.managed.set(uuid, { accessory, handler });
+    }
+    /**
+     * Start the gas meter (polling, history, API) and, when it is placed on
+     * the host bridge, attach its platform accessory. Returns the accessory
+     * UUID when the gas meter lives on the host bridge.
+     */
+    async startGas() {
+        if (!this.gas) {
+            return undefined;
+        }
+        let uuid;
+        if (this.gasPlacement?.kind === 'host') {
+            uuid = GasMeter.uuid(this.api.hap);
+            const accessory = this.getOrCreateAccessory(uuid, this.gas.name, {
+                kind: 'gas',
+                id: 'gas-meter',
+                service: 'GasMeter',
+                name: this.gas.name,
+            });
+            this.gas.attach(accessory);
+        }
+        try {
+            await this.storage.ensureRoot();
+            await this.gas.start();
+        }
+        catch (err) {
+            this.log.error('Gas meter could not start: %s', err.message);
+        }
+        return uuid;
+    }
+    /** A cached host gas accessory whose gas meter now lives on a multi-bridge (or is off) is removed. */
+    dropMovedGasAccessory(gasUuid) {
+        const cachedGas = [...this.cachedAccessories.values()]
+            .filter((a) => a.context?.kind === 'gas' && a.UUID !== gasUuid);
+        if (cachedGas.length === 0) {
+            return;
+        }
+        for (const a of cachedGas) {
+            this.cachedAccessories.delete(a.UUID);
+        }
+        this.log.info('Removing the cached gas meter accessory of this block (now on a multi-bridge or off)');
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, cachedGas);
     }
     async fetchChannel(address, fallbackName) {
         /* c8 ignore next 3 — same unreachable-in-prod guard as attachChannel/Variable/Program */

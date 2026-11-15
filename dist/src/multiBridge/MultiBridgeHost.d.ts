@@ -19,9 +19,10 @@
  */
 import type { HAP, PublishInfo } from 'homebridge';
 import type { CcuClient } from '../ccu/CcuClient.js';
-import type { MultiBridgeConfig } from '../types.js';
+import type { MultiBridgeConfig, MultiBridgeEntry } from '../types.js';
 import type { PrefixedLogger } from '../util/logger.js';
-import { type HapBridge } from './bridgeBuilder.js';
+import { type GasMappingGuard, type HapBridge } from './bridgeBuilder.js';
+import type { HapAccessory } from './BridgedAccessoryHandle.js';
 import { type IdentityStore } from './identityStore.js';
 import { type PortProbe } from './portProbe.js';
 export interface BridgePublisher {
@@ -41,6 +42,10 @@ export interface MultiBridgeHostOptions {
     portProbe?: PortProbe;
     /** Upper bound for unpublishing all bridges on shutdown (Homebridge kills the child after 5 s). */
     shutdownTimeoutMs?: number;
+    /** The gas meter settings, so its device is never also built as an accessory. */
+    gas?: GasMappingGuard;
+    /** Accessories added to a bridge besides its mappings (the gas meter on its chosen bridge). */
+    extraAccessories?: (entry: MultiBridgeEntry) => HapAccessory[];
 }
 export declare class MultiBridgeHost {
     private readonly opts;

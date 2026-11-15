@@ -119,10 +119,10 @@ export class MultiBridgeHost {
         });
     }
     async publishOne(entry, snapshot) {
-        const { hap, ccu, log, version, identityStore, config } = this.opts;
+        const { hap, ccu, log, version, identityStore, config, gas, extraAccessories } = this.opts;
         let built;
         try {
-            built = buildBridge({ hap, ccu, log, version }, entry, snapshot);
+            built = buildBridge({ hap, ccu, log, version, gas, extraAccessories }, entry, snapshot);
         }
         catch (err) {
             log.error('Bridge %s not published: build failed: %s', entry.name, err.message);
