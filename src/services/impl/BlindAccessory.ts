@@ -10,6 +10,37 @@ const BLIND_CHANNEL_TYPES = [
   'SHUTTER_VIRTUAL_RECEIVER',
 ];
 
+/** HmIP virtual receivers; those of wired actuators (DRBL4 style) have a status channel. */
+const VIRTUAL_RECEIVER_TYPES = ['BLIND_VIRTUAL_RECEIVER', 'SHUTTER_VIRTUAL_RECEIVER'];
+const TRANSMITTER_TYPES = ['BLIND_TRANSMITTER', 'SHUTTER_TRANSMITTER'];
+const GROUP_SIZE = 4;
+
+/**
+ * Status (transmitter) channel of an HmIP virtual receiver, for layouts where
+ * the transmitter is the first channel of a group of four (HmIPW-DRBL4,
+ * DRBLI4, DRSI4: 1/5/9/13, each followed by three virtual receivers). It is
+ * the nearest preceding BLIND_/SHUTTER_TRANSMITTER of the same device taken
+ * from `channels`, and only when it is that group start. Other layouts (for
+ * example HmIP-BROLL, FROLL, BBL, FBL with the transmitter on channel 3, whose
+ * virtual receiver follows wall button moves) and unknown channel types give
+ * undefined: the virtual channel is used, with no guess.
+ */
+export function transmitterAddress(address: string, channels: readonly CcuChannel[] | undefined): string | undefined {
+  const m = /^(.*):(\d+)$/.exec(address);
+  if (!m || channels === undefined) return undefined;
+  const device = m[1]!;
+  const n = Number(m[2]);
+  let found: number | undefined;
+  for (const c of channels) {
+    const cm = /^(.*):(\d+)$/.exec(c.address);
+    if (!cm || cm[1] !== device || !TRANSMITTER_TYPES.includes(c.type)) continue;
+    const idx = Number(cm[2]);
+    if (idx < n && (found === undefined || idx > found)) found = idx;
+  }
+  const start = n - ((n - 1) % GROUP_SIZE);
+  return found !== undefined && found === start ? `${device}:${found}` : undefined;
+}
+
 const STATE_STOPPED = 2;
 const STATE_INCREASING = 1;
 const STATE_DECREASING = 0;
@@ -18,6 +49,8 @@ const STATE_DECREASING = 0;
 const SETTLE_MS = 5000;
 /** Safety net while the CCU itself says "moving" (WORKING / ACTIVITY_STATE). */
 const FAILSAFE_MS = 120000;
+/** After a HomeKit write, a "stable" report from the transmitter this soon is taken as stale. */
+const STALE_STABLE_MS = 5000;
 
 type Direction = -1 | 0 | 1;
 
@@ -37,6 +70,16 @@ type Direction = -1 | 0 | 1;
  * - With the imported setting `useSlats` the service also gets slat tilt
  *   (CurrentHorizontalTiltAngle / TargetHorizontalTiltAngle <-> LEVEL_2),
  *   shared with the slat blind type.
+ * - HmIP virtual receivers (BLIND_/SHUTTER_VIRTUAL_RECEIVER) report only
+ *   moves made through themselves. A wall button or direct link moves the
+ *   blind without touching them, so CurrentPosition and PositionState come
+ *   from the transmitter (status) channel of the group instead: LEVEL,
+ *   ACTIVITY_STATE and PROCESS (0 = stable) plus LEVEL_2 for the slats.
+ *   This applies to wired actuator layouts only (transmitter first of four).
+ *   TargetPosition writes still go to the configured virtual channel. The
+ *   plugin never writes a correction. When the transmitter cannot be read, or
+ *   the per-channel setting `useStatusChannel` is false, the virtual channel
+ *   is used as before.
  * HomeKit 100 equals CCU LEVEL 1.0 (open); no inversion is applied.
  */
 class BlindHandler extends AccessoryBase implements ChannelService {
@@ -50,9 +93,17 @@ class BlindHandler extends AccessoryBase implements ChannelService {
   private explicitStable = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private service?: Service;
+  private statusAddress: string | undefined;
+  /** True once the transmitter answered: it then drives position and state. */
+  private statusActive = false;
+  /** Until this time, a stable report whose LEVEL differs from the target is ignored (see onCommand). */
+  private staleStableUntil = 0;
 
   attach(channel: CcuChannel): void {
     this.channelAddress = channel.address;
+    if (VIRTUAL_RECEIVER_TYPES.includes(channel.type) && this.accessory.context?.settings?.useStatusChannel !== false) {
+      this.statusAddress = transmitterAddress(channel.address, channel.siblings);
+    }
     const service = this.getOrAddService(this.Service.WindowCovering, channel.name);
     this.service = service;
 
@@ -70,30 +121,48 @@ class BlindHandler extends AccessoryBase implements ChannelService {
     service.getCharacteristic(this.Characteristic.PositionState)
       .onGet(this.wrapGet<number>(() => this.positionState()));
 
-    this.registerListener(this.channelAddress, 'LEVEL', (raw) => {
-      const pct = normalizeLevelToPercent(raw);
-      if (pct !== undefined) {
-        this.onLevel(pct);
+    // Virtual channel events count until the transmitter has answered; from
+    // then on only the transmitter's events do (and the other way round).
+    const sources = [{ address: this.channelAddress, status: false }];
+    if (this.statusAddress !== undefined) {
+      sources.push({ address: this.statusAddress, status: true });
+    }
+    for (const { address, status } of sources) {
+      const live = (): boolean => this.statusActive === status;
+
+      this.registerListener(address, 'LEVEL', (raw) => {
+        const pct = normalizeLevelToPercent(raw);
+        if (pct !== undefined && live()) {
+          this.onLevel(pct);
+        }
+      });
+
+      // HmIP: 0 unknown, 1 up, 2 down, 3 stable.
+      this.registerListener(address, 'ACTIVITY_STATE', (raw) => {
+        if (!live()) return;
+        if (status && Number(raw) === 3 && this.isStaleStable()) return;
+        this.onActivityState(Number(raw));
+      });
+
+      if (status) {
+        // Transmitter only: 0 stable, anything else means the process is running.
+        this.registerListener(address, 'PROCESS', (raw) => {
+          if (!live()) return;
+          if (Number(raw) === 0) {
+            if (this.isStaleStable()) return;
+            this.explicitStable = true;
+            this.finish();
+          } else {
+            this.onExplicitMoving(0);
+          }
+        });
       }
-    });
+    }
 
     this.registerListener(this.channelAddress, 'WORKING', (raw) => {
       if (raw) {
         this.onExplicitMoving(this.direction);
       } else {
-        this.finish();
-      }
-    });
-
-    // HmIP: 0 unknown, 1 up, 2 down, 3 stable.
-    this.registerListener(this.channelAddress, 'ACTIVITY_STATE', (raw) => {
-      const n = Number(raw);
-      if (n === 1) {
-        this.onExplicitMoving(1);
-      } else if (n === 2) {
-        this.onExplicitMoving(-1);
-      } else if (n === 3) {
-        this.explicitStable = true;
         this.finish();
       }
     });
@@ -111,7 +180,7 @@ class BlindHandler extends AccessoryBase implements ChannelService {
 
     // Imported hap-homematic setting: the blind has slats, so add tilt (LEVEL_2).
     if (this.accessory.context?.settings?.useSlats === true) {
-      this.attachSlatTilt(service, this.channelAddress, () => this.positionState() !== STATE_STOPPED);
+      this.attachSlatTilt(service, this.channelAddress, () => this.positionState() !== STATE_STOPPED, this.statusAddress, () => this.statusActive);
     } else {
       // A cached accessory may still carry tilt from when useSlats was on.
       for (const tilt of [this.Characteristic.CurrentHorizontalTiltAngle, this.Characteristic.TargetHorizontalTiltAngle]) {
@@ -124,16 +193,50 @@ class BlindHandler extends AccessoryBase implements ChannelService {
     // Pull initial position. Without this, the accessory shows 0 (closed)
     // until the next CCU push event arrives, which for blinds may be
     // hours away. Best-effort; we ignore errors so a missing-channel
-    // doesn't poison startup.
-    this.ccu.getValue(this.channelAddress, 'LEVEL').then((raw) => {
-      const pct = normalizeLevelToPercent(raw);
-      if (pct === undefined) return;
-      this.current = pct;
-      this.target = pct;
-      service.updateCharacteristic(this.Characteristic.CurrentPosition, pct);
-      service.updateCharacteristic(this.Characteristic.TargetPosition, pct);
-      service.updateCharacteristic(this.Characteristic.PositionState, STATE_STOPPED);
-    }).catch(() => undefined);
+    // doesn't poison startup. With a status channel the transmitter is read
+    // first; if it cannot be read, warn once and use the virtual channel.
+    void this.pullInitial(service);
+  }
+
+  private async pullInitial(service: Service): Promise<void> {
+    let pct: number | undefined;
+    if (this.statusAddress !== undefined) {
+      pct = await this.readLevel(this.statusAddress);
+      if (pct === undefined) {
+        this.log.warn(
+          'Status channel %s is not readable; using %s for position and state.',
+          this.statusAddress, this.channelAddress,
+        );
+      } else {
+        this.statusActive = true;
+      }
+    }
+    pct ??= await this.readLevel(this.channelAddress);
+    if (pct === undefined) return;
+    this.current = pct;
+    this.target = pct;
+    service.updateCharacteristic(this.Characteristic.CurrentPosition, pct);
+    service.updateCharacteristic(this.Characteristic.TargetPosition, pct);
+    service.updateCharacteristic(this.Characteristic.PositionState, STATE_STOPPED);
+  }
+
+  private async readLevel(address: string): Promise<number | undefined> {
+    try {
+      return normalizeLevelToPercent(await this.ccu.getValue(address, 'LEVEL'));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private onActivityState(n: number): void {
+    if (n === 1) {
+      this.onExplicitMoving(1);
+    } else if (n === 2) {
+      this.onExplicitMoving(-1);
+    } else if (n === 3) {
+      this.explicitStable = true;
+      this.finish();
+    }
   }
 
   override dispose(): void {
@@ -151,6 +254,9 @@ class BlindHandler extends AccessoryBase implements ChannelService {
     }
     this.moving = true;
     this.direction = pct > this.current ? 1 : -1;
+    // The transmitter may still report the previous "stable" just after the
+    // write, before the motor starts. Ignore that until a moving report or the guard time.
+    this.staleStableUntil = this.statusActive ? Date.now() + STALE_STABLE_MS : 0;
     this.pushState();
     this.arm(SETTLE_MS);
   }
@@ -180,7 +286,12 @@ class BlindHandler extends AccessoryBase implements ChannelService {
     this.pushState();
   }
 
+  private isStaleStable(): boolean {
+    return this.commanded && Date.now() < this.staleStableUntil && this.current !== this.target;
+  }
+
   private onExplicitMoving(direction: Direction): void {
+    this.staleStableUntil = 0;
     this.explicitMoving = true;
     this.explicitStable = false;
     this.moving = true;
@@ -195,6 +306,7 @@ class BlindHandler extends AccessoryBase implements ChannelService {
 
   /** Move is over: report STOPPED and settle TargetPosition on where it ended. */
   private finish(): void {
+    this.staleStableUntil = 0;
     this.clearTimer();
     this.moving = false;
     this.explicitMoving = false;

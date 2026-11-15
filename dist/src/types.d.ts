@@ -204,6 +204,8 @@ export interface CcuChannel {
     index: number;
     type: string;
     name: string;
+    /** All channels of the same device (set when a service is attached; used to find a blind's status channel). */
+    siblings?: CcuChannel[];
 }
 export interface CcuVariable {
     name: string;

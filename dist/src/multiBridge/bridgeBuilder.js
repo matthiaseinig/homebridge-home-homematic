@@ -8,7 +8,7 @@
 import { gasMappingConflict } from '../gas/placement.js';
 import { findProgramServiceByKey, findServiceByKey, findVariableServiceByKey, pickVariableService, PROGRAM_SERVICE_DEFINITIONS } from '../services/registry.js';
 import { PLUGIN_NAME } from '../settings.js';
-import { channelDisplayName, findChannel, programDisplayName, variableDisplayName } from '../util/mappings.js';
+import { channelDisplayName, deviceChannels, findChannel, programDisplayName, variableDisplayName } from '../util/mappings.js';
 import { BridgedAccessoryHandle } from './BridgedAccessoryHandle.js';
 /** hap-homematic created its bridges as `new Bridge(name, <instance id>)`. */
 export function bridgeUuidFor(hap, entry) {
@@ -103,7 +103,7 @@ class AccessoryFactory {
             seed: legacy ? m.uuidSeed : `channel:${m.address}`,
             legacy,
             context: { kind: 'channel', id: m.address, service: def.key, subtype: m.subtype, settings: m.settings, name, legacyLayout: legacy },
-            attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach({ ...channel, name })),
+            attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach({ ...channel, name, siblings: deviceChannels(this.snapshot.devices, m.address) })),
         };
     }
     variable(m) {

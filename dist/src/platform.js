@@ -17,7 +17,7 @@ import { MultiBridgeHost } from './multiBridge/MultiBridgeHost.js';
 import { persistIdentityStore } from './multiBridge/identityStore.js';
 import { ConfigError, resolveConfig } from './util/config.js';
 import { PrefixedLogger } from './util/logger.js';
-import { channelDisplayName, findChannel, programDisplayName, variableDisplayName } from './util/mappings.js';
+import { channelDisplayName, deviceChannels, findChannel, programDisplayName, variableDisplayName } from './util/mappings.js';
 import { PluginStorage } from './util/storage.js';
 export class HomematicPlatform {
     Service;
@@ -258,7 +258,7 @@ export class HomematicPlatform {
         // Services name their HAP services after the channel. Use the HomeKit
         // name (as hap-homematic did), not the raw CCU channel name, which often
         // contains characters HomeKit rejects (`OG:Bad:Rollo`, `HmIP-WTH-2 0001…:1`).
-        handler.attach({ ...channel, name: displayName });
+        handler.attach({ ...channel, name: displayName, siblings: await this.siblingsOf(address) });
         this.managed.set(uuid, { accessory, handler });
     }
     async attachVariable(uuid, name, serviceKey, settings, displayName, subtype) {
@@ -363,6 +363,9 @@ export class HomematicPlatform {
         }
         this.log.info('Removing the cached gas meter accessory of this block (now on a multi-bridge or off)');
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, cachedGas);
+    }
+    async siblingsOf(address) {
+        return this.devicesMemo === undefined ? undefined : deviceChannels(await this.devicesMemo, address);
     }
     async fetchChannel(address, fallbackName) {
         /* c8 ignore next 3 — same unreachable-in-prod guard as attachChannel/Variable/Program */

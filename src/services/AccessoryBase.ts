@@ -197,7 +197,13 @@ export abstract class AccessoryBase {
    * are not touched: the handler writes LEVEL itself. Shared by the slat blind
    * type and by the normal blind type when its imported `useSlats` setting is on.
    */
-  protected attachSlatTilt(service: Service, channelAddress: string, isMoving: () => boolean): void {
+  protected attachSlatTilt(
+    service: Service,
+    channelAddress: string,
+    isMoving: () => boolean,
+    statusAddress?: string,
+    statusActive: () => boolean = () => false,
+  ): void {
     let currentTilt = 0;
     let targetTilt = 0;
     this.slatWriter = new SlatWriter({
@@ -235,8 +241,23 @@ export abstract class AccessoryBase {
       service.updateCharacteristic(this.Characteristic.TargetHorizontalTiltAngle, targetTilt);
     };
 
-    this.registerListener(channelAddress, 'LEVEL_2', apply);
-    this.ccu.getValue(channelAddress, 'LEVEL_2').then(apply).catch(() => undefined);
+    // `statusAddress` is the transmitter of an HmIP group: it also sees tilt
+    // changes made by a wall button. Writes still go to `channelAddress`.
+    // One source at a time, like position: the transmitter once it has answered.
+    this.registerListener(channelAddress, 'LEVEL_2', (raw) => {
+      if (!statusActive()) apply(raw);
+    });
+    if (statusAddress !== undefined) {
+      this.registerListener(statusAddress, 'LEVEL_2', (raw) => {
+        if (statusActive()) apply(raw);
+      });
+      this.ccu.getValue(statusAddress, 'LEVEL_2')
+        .then((raw) => (toFiniteNumber(raw) === undefined ? this.ccu.getValue(channelAddress, 'LEVEL_2') : raw))
+        .catch(() => this.ccu.getValue(channelAddress, 'LEVEL_2'))
+        .then(apply).catch(() => undefined);
+    } else {
+      this.ccu.getValue(channelAddress, 'LEVEL_2').then(apply).catch(() => undefined);
+    }
   }
 
   dispose(): void {

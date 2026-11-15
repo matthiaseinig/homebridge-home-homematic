@@ -145,6 +145,28 @@ npm install -g homebridge-homematic-hap
 > can't find its dependencies. `--install-links` forces a copy and
 > avoids the issue.
 
+## Blinds: position from the status channel
+
+For HmIP wired blind and shutter actuators whose layout is a transmitter
+followed by three virtual receivers per group (HmIPW-DRBL4, DRBLI4, DRSI4:
+transmitters 1, 5, 9, 13), the Home app channel is a virtual receiver (2, 6,
+10, 14). A wall button or direct link moves the blind without changing that
+channel, so the plugin reads CurrentPosition and PositionState from the status
+(transmitter) channel of the group instead. The plugin finds it from the
+device's channel types (the preceding `BLIND_TRANSMITTER` or
+`SHUTTER_TRANSMITTER`, and only when it is the first channel of a group of
+four). Other layouts are not supported and keep the virtual channel, for
+example HmIP-BROLL, FROLL, BBL and FBL (transmitter on channel 3), whose
+virtual receiver follows wall button moves. Writes still go to the virtual
+channel, and the plugin never sends a correction command. If the status channel
+cannot be read, the plugin logs one warning and uses the virtual channel as
+before. To turn it off for a channel, set `"useStatusChannel": false` in that
+channel's `settings`.
+
+If you used a script (for example Scrypted MQTT "shade correction") that
+writes the transmitter `LEVEL` back to the virtual channel after a move, you
+can retire it: it was a second writer per blind and is no longer needed.
+
 ## Blinds with slats: test one blind first
 
 HmIP blind actuators (for example HmIPW-DRBL4) ignore a lone `LEVEL_2` write.

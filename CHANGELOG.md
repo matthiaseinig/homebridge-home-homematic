@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.8.1
+
+- **Blind status channel: only for wired actuator layouts.** The transmitter is
+  now found from the device's channel types (the nearest preceding
+  `BLIND_TRANSMITTER` or `SHUTTER_TRANSMITTER`) and used only when it is the
+  first channel of a group of four (HmIPW-DRBL4, DRBLI4, DRSI4 style). Layouts
+  such as HmIP-BROLL, FROLL, BBL and FBL (key channels 1-2, transmitter on
+  channel 3, virtual receivers 4-6) keep the virtual channel, because their
+  virtual receiver follows wall button moves. Unknown channel types also keep
+  the virtual channel; there is no arithmetic guess and no warning.
+- Fix a race after a HomeKit TargetPosition write: a stale "stable" report
+  (`PROCESS` 0 or `ACTIVITY_STATE` 3) from the transmitter, with a `LEVEL`
+  different from the new target, is ignored until a moving report arrives or
+  about 5 s pass, so TargetPosition no longer jumps back to the old value.
+- Slat tilt (`LEVEL_2`) uses one source at a time like position: the
+  transmitter once it has answered, otherwise the virtual channel.
+- The config UI server bundle is rebuilt from a clean `npm ci`.
+
+## 1.8.0
+
+- **Blinds: position and state now come from the status channel.** HmIP
+  virtual receivers (`BLIND_VIRTUAL_RECEIVER`, `SHUTTER_VIRTUAL_RECEIVER`,
+  for example HmIPW-DRBL4 channels 2-4, 6-8, 10-12, 14-16) only see moves made
+  through themselves; a wall button or direct link changes just the
+  transmitter channel of the group (the first of four, `n - ((n - 1) % 4)`,
+  so 1, 5, 9, 13). CurrentPosition and PositionState now follow the
+  transmitter's `LEVEL`, `ACTIVITY_STATE` and `PROCESS` (`LEVEL_2` for slats),
+  and TargetPosition follows CurrentPosition when the blind stops after an
+  external move. TargetPosition writes still go to the configured virtual
+  channel, and the plugin sends no correction or other extra write.
+- If the transmitter cannot be read, the blind falls back to the virtual
+  channel as before, with one warning per accessory. The per-channel setting
+  `useStatusChannel: false` turns the status channel off.
+
 ## 1.7.3
 
 - **Gas meter: datapoint description failed on the CCU.** The CCU JSON API

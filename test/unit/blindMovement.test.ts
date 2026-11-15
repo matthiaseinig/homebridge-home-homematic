@@ -231,7 +231,9 @@ describe('slat writes (slatWriteMode)', () => {
   const ADDR = 'HmIP.B:4';
   const tilt = (t: ReturnType<typeof setup>, v: number) => t.get('TargetHorizontalTiltAngle').onSetHandler!(v);
   const dps = (t: ReturnType<typeof setup>) => t.setValue.mock.calls.map(([, dp, v]) => [dp, v]);
-  const warns = (t: ReturnType<typeof setup>) => (t.rawLog as unknown as { warn: { mock: { calls: unknown[] } } }).warn.mock.calls.length;
+  // The unreadable status channel warning (getValue is unmocked here) is not a write failure.
+  const warns = (t: ReturnType<typeof setup>) => (t.rawLog as unknown as { warn: { mock: { calls: unknown[][] } } }).warn.mock.calls
+    .filter((c) => !String(c[0]).includes('Status channel')).length;
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
