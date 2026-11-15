@@ -8,13 +8,15 @@
 
 import type { HAP } from 'homebridge';
 import type { CcuClient } from '../ccu/CcuClient.js';
+import type { GasSettings } from '../gas/config.js';
+import { gasMappingConflict } from '../gas/placement.js';
 import { findProgramServiceByKey, findServiceByKey, findVariableServiceByKey, pickVariableService, PROGRAM_SERVICE_DEFINITIONS } from '../services/registry.js';
 import type { ChannelService, ProgramService, ServiceContext, VariableService } from '../services/types.js';
 import { PLUGIN_NAME } from '../settings.js';
 import type { AccessoryContext, CcuDevice, CcuVariable, MultiBridgeEntry } from '../types.js';
 import type { PrefixedLogger } from '../util/logger.js';
 import { channelDisplayName, findChannel, programDisplayName, variableDisplayName } from '../util/mappings.js';
-import { BridgedAccessoryHandle } from './BridgedAccessoryHandle.js';
+import { BridgedAccessoryHandle, type HapAccessory } from './BridgedAccessoryHandle.js';
 
 export type HapBridge = InstanceType<HAP['Bridge']>;
 type Handler = ChannelService | VariableService | ProgramService;
@@ -42,11 +44,18 @@ export interface BuiltBridge {
   handlers: Handler[];
 }
 
+/** What the bridge builder needs to know of the gas meter. */
+export type GasMappingGuard = Pick<GasSettings, 'enabled' | 'address'>;
+
 export interface BuildDeps {
   hap: HAP;
   ccu: CcuClient;
   log: PrefixedLogger;
   version: string;
+  /** With the gas meter on, its device is never built from a mapping (see gas/placement.ts). */
+  gas?: GasMappingGuard;
+  /** Accessories added besides the mappings (the gas meter on its chosen bridge). */
+  extraAccessories?: (entry: MultiBridgeEntry) => HapAccessory[];
 }
 
 /** hap-homematic created its bridges as `new Bridge(name, <instance id>)`. */
@@ -75,9 +84,21 @@ export function buildBridge(deps: BuildDeps, entry: MultiBridgeEntry, snapshot: 
 
   const built: BuiltBridge = { entry, bridge, accessories: [], skipped: [], handlers: [] };
   const builder = new AccessoryFactory(deps, entry, snapshot, built, log);
-  entry.channels.forEach((m) => builder.tryAdd('channel', m.address, () => builder.channel(m)));
+  entry.channels.forEach((m) => {
+    const conflict = gasMappingConflict(deps.gas, m);
+    if (conflict) {
+      // The gas meter device address is not logged or listed.
+      built.skipped.push({ kind: 'channel', id: 'gas meter device', reason: conflict });
+      log.warn('Gas meter mode: skipping a channel mapping (%s): %s', m.service, conflict);
+      return;
+    }
+    builder.tryAdd('channel', m.address, () => builder.channel(m));
+  });
   entry.variables.forEach((m) => builder.tryAdd('variable', m.name, () => builder.variable(m)));
   entry.programs.forEach((m) => builder.tryAdd('program', m.name, () => builder.program(m)));
+  for (const accessory of deps.extraAccessories?.(entry) ?? []) {
+    builder.addExtra(accessory);
+  }
   return built;
 }
 
@@ -127,6 +148,10 @@ class AccessoryFactory {
       throw new Error(`Unknown service: ${m.service}`);
     }
     const channel = findChannel(this.snapshot.devices, m.address, m.name);
+    const conflict = gasMappingConflict(this.deps.gas, m, channel.type);
+    if (conflict) {
+      throw new Error(`gas meter mode: ${conflict}`);
+    }
     const name = channelDisplayName(m, channel);
     const legacy = this.legacy(m.uuidSeed);
     return {
@@ -166,6 +191,23 @@ class AccessoryFactory {
       context: { kind: 'program', id: m.name, service: def.key, name },
       attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach(m.name)),
     };
+  }
+
+  /** A ready accessory that is not built from a mapping (the gas meter). */
+  addExtra(accessory: HapAccessory): void {
+    const id = accessory.displayName;
+    try {
+      if (this.uuids.has(accessory.UUID)) {
+        throw new Error(`accessory UUID already used on this bridge (${id})`);
+      }
+      this.built.bridge.addBridgedAccessory(accessory);
+      this.uuids.add(accessory.UUID);
+      this.built.accessories.push({ kind: 'gas', id, name: id, uuid: accessory.UUID, legacyIdentity: false });
+    } catch (err) {
+      const reason = (err as Error).message;
+      this.built.skipped.push({ kind: 'gas', id, reason });
+      this.log.warn('Skipping %s: %s', id, reason);
+    }
   }
 
   private legacy(seed: string | undefined): boolean {

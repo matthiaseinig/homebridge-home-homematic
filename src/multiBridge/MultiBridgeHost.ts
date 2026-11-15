@@ -22,7 +22,8 @@ import type { HAP, PublishInfo } from 'homebridge';
 import type { CcuClient } from '../ccu/CcuClient.js';
 import type { MultiBridgeConfig, MultiBridgeEntry } from '../types.js';
 import type { PrefixedLogger } from '../util/logger.js';
-import { buildBridge, type BuiltBridge, type CcuSnapshot, type HapBridge } from './bridgeBuilder.js';
+import { buildBridge, type BuiltBridge, type CcuSnapshot, type GasMappingGuard, type HapBridge } from './bridgeBuilder.js';
+import type { HapAccessory } from './BridgedAccessoryHandle.js';
 import { identityProblem, type IdentityStore } from './identityStore.js';
 import { isTcpPortFree, type PortProbe } from './portProbe.js';
 
@@ -52,6 +53,10 @@ export interface MultiBridgeHostOptions {
   portProbe?: PortProbe;
   /** Upper bound for unpublishing all bridges on shutdown (Homebridge kills the child after 5 s). */
   shutdownTimeoutMs?: number;
+  /** The gas meter settings, so its device is never also built as an accessory. */
+  gas?: GasMappingGuard;
+  /** Accessories added to a bridge besides its mappings (the gas meter on its chosen bridge). */
+  extraAccessories?: (entry: MultiBridgeEntry) => HapAccessory[];
 }
 
 export class MultiBridgeHost {
@@ -152,10 +157,10 @@ export class MultiBridgeHost {
   }
 
   private async publishOne(entry: MultiBridgeEntry, snapshot: CcuSnapshot): Promise<void> {
-    const { hap, ccu, log, version, identityStore, config } = this.opts;
+    const { hap, ccu, log, version, identityStore, config, gas, extraAccessories } = this.opts;
     let built: BuiltBridge;
     try {
-      built = buildBridge({ hap, ccu, log, version }, entry, snapshot);
+      built = buildBridge({ hap, ccu, log, version, gas, extraAccessories }, entry, snapshot);
     } catch (err) {
       log.error('Bridge %s not published: build failed: %s', entry.name, (err as Error).message);
       return;

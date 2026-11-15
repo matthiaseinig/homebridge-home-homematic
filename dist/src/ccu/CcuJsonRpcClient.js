@@ -27,13 +27,37 @@ const API_PORT_HTTPS = 443;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SAFE_NAME_RE = /^[A-Za-z0-9_\-. äöüÄÖÜß]{1,200}$/;
+/**
+ * Session errors the CCU raises before it runs the method: an expired or
+ * unknown session id, and also missing rights (the CCU answers both with
+ * `access denied`). Matched on the raw CCU text, before masking. Only these
+ * (or HTTP-like codes 401/403) may replace the session and retry a method
+ * that changes something (`Interface.setValue`, `Program.execute`, ...).
+ */
+const SESSION_ERROR_RE = new RegExp([
+    String.raw `^\s*access denied\b`,
+    String.raw `\binvalid session\b`,
+    String.raw `\bsession (?:id )?(?:is )?(?:invalid|expired|unknown|not found)\b`,
+    String.raw `\bsession expired\b`,
+    String.raw `\bnot authenticated\b`,
+    String.raw `\bunauthori[sz]ed\b`,
+].join('|'), 'i');
+/** Looser hint, used only for read methods (a repeated read is harmless). */
+const SESSION_HINT_RE = /session|login/i;
+/** Read methods: retried on the looser hint too. Every other method only on a session error. */
+const READ_METHOD_RE = /\.(?:get|list|describe|is|has)[A-Za-z]*$/;
+/** A method refused even with a fresh session waits this long, doubling up to the maximum. */
+export const PERMISSION_BACKOFF_MS = 10 * 60_000;
+export const MAX_PERMISSION_BACKOFF_MS = 60 * 60_000;
 export class JsonRpcError extends Error {
     code;
     cause;
-    constructor(message, code, cause) {
+    kind;
+    constructor(message, code, cause, kind = 'protocol') {
         super(message);
         this.code = code;
         this.cause = cause;
+        this.kind = kind;
         this.name = 'JsonRpcError';
     }
 }
@@ -43,37 +67,93 @@ export class CcuJsonRpcClient {
     useTls;
     portOverride;
     timeoutMs;
+    tlsAgent;
     auth;
     log;
-    sessionId;
+    session;
+    loginInFlight;
+    seq = 0;
+    denied = new Map();
+    now;
     constructor(opts) {
         this.host = opts.host;
         this.useTls = Boolean(opts.useTls);
         this.portOverride = opts.port;
         this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        this.tlsAgent = opts.tlsAgent;
         this.auth = opts.auth;
         this.log = opts.log;
+        this.now = opts.now ?? Date.now;
     }
-    /** Drop the cached session id; the next authenticated call will re-login. */
+    /** Drop the cached session (it is logged out once its requests are done); the next call logs in again. */
     invalidateSession() {
-        this.sessionId = undefined;
+        if (this.session) {
+            this.retire(this.session);
+        }
+    }
+    /** True while a session is cached. */
+    get hasSession() {
+        return this.session !== undefined;
+    }
+    /**
+     * Log the cached session out (best effort) and forget it. Used on
+     * shutdown, so no session is left open on the CCU until its timeout.
+     */
+    async logout() {
+        await this.loginInFlight?.catch(() => undefined);
+        const s = this.session;
+        if (s) {
+            await this.retire(s);
+        }
     }
     /**
      * Invoke a JSON-RPC method, automatically attaching `_session_id_` if
-     * authentication is configured. Renews the session once on a 401-style
-     * "session expired" response and retries the call.
+     * authentication is configured.
+     *
+     * Session handling, shared by every caller of this client:
+     *   - A session error (`access denied`, an invalid session) replaces the
+     *     session once and retries, unless a later request on the same
+     *     session succeeded (then the session is fine and the method itself
+     *     is refused). Concurrent callers share one new login; a caller whose
+     *     session was already replaced just retries on the new one.
+     *   - A method that is refused again with the fresh session is a rights
+     *     problem: the session is kept, only this call fails (kind
+     *     `permission`) and the method waits PERMISSION_BACKOFF_MS (doubling
+     *     to MAX_PERMISSION_BACKOFF_MS) before it is sent again; one warning is
+     *     logged. A success of the method ends its wait.
+     *   - A method that changes something is retried only on a real session
+     *     error, never on a loose hint in an error text.
+     *   - A replaced session is logged out once no request uses it any more.
      */
     async call(method, params = {}) {
+        const key = deniedKey(method, params);
+        const denied = this.denied.get(key);
+        if (denied && denied.until > this.now()) {
+            throw new JsonRpcError(`${method}: refused by the CCU (missing rights), paused until ${new Date(denied.until).toISOString()}`, undefined, undefined, 'permission');
+        }
         return this.callOnce(method, params, false);
     }
     async callOnce(method, params, retried) {
-        const sid = await this.ensureSession();
+        const session = await this.ensureSession();
+        const seq = ++this.seq;
         const body = Buffer.from(JSON.stringify({
             version: '1.1',
             method,
-            params: sid ? { ...params, _session_id_: sid } : params,
+            params: session ? { ...params, _session_id_: session.sid } : params,
         }), 'utf8');
-        const raw = await this.postJson(body);
+        let raw;
+        if (session) {
+            session.inflight += 1;
+        }
+        try {
+            raw = await this.postJson(body);
+        }
+        finally {
+            if (session) {
+                session.inflight -= 1;
+                void this.drain(session);
+            }
+        }
         const text = raw.toString('utf8');
         let parsed;
         try {
@@ -82,33 +162,112 @@ export class CcuJsonRpcClient {
         catch {
             throw new JsonRpcError(`malformed JSON-RPC response from ${method}`);
         }
-        if (parsed.error) {
-            const code = parsed.error.code;
-            const message = parsed.error.message ?? 'unknown error';
-            // Code 401/403 with a session-expired hint → re-login once.
-            const looksLikeSessionExpiry = (code === 401 || code === 403)
-                || /session/i.test(message);
-            if (looksLikeSessionExpiry && this.auth && !retried) {
-                this.log.debug('JSON-RPC session expired, re-logging in');
-                this.invalidateSession();
+        if (parsed === null || typeof parsed !== 'object') {
+            throw new JsonRpcError(`malformed JSON-RPC response from ${method}`);
+        }
+        if (!parsed.error) {
+            if (session) {
+                session.okSeq = Math.max(session.okSeq, seq);
+            }
+            this.denied.delete(deniedKey(method, params));
+            return parsed.result;
+        }
+        const code = parsed.error.code;
+        const rawMessage = String(parsed.error.message ?? 'unknown error');
+        // Detect on the raw text; mask only what is reported.
+        const sessionError = code === 401 || code === 403 || SESSION_ERROR_RE.test(rawMessage)
+            || (READ_METHOD_RE.test(method) && SESSION_HINT_RE.test(rawMessage));
+        const message = this.scrub(rawMessage, session?.sid);
+        if (!sessionError) {
+            throw new JsonRpcError(`${method}: ${message}`, code, undefined, 'protocol');
+        }
+        if (!session) {
+            throw new JsonRpcError(`${method}: ${message}`, code, undefined, 'session');
+        }
+        if (this.session !== session) {
+            // Replaced meanwhile by another caller: retry once on the current session, no new login.
+            if (!retried) {
                 return this.callOnce(method, params, true);
             }
-            throw new JsonRpcError(`${method}: ${message}`, code);
+            throw new JsonRpcError(`${method}: ${message}`, code, undefined, 'session');
         }
-        return parsed.result;
+        if (retried || session.okSeq > seq) {
+            // A fresh session, or one proven valid by a later request: the method itself is refused.
+            throw this.denyMethod(method, params, `${method}: ${message}`, code);
+        }
+        this.log.debug('JSON-RPC session refused, logging in again');
+        void this.retire(session);
+        return this.callOnce(method, params, true);
+    }
+    /** Put a method refused with a valid session on its backoff; warn once per method. */
+    denyMethod(method, params, message, code) {
+        const key = deniedKey(method, params);
+        const prev = this.denied.get(key);
+        const now = this.now();
+        if (!prev || prev.until <= now) {
+            const waitMs = prev ? Math.min(MAX_PERMISSION_BACKOFF_MS, prev.waitMs * 2) : PERMISSION_BACKOFF_MS;
+            this.denied.set(key, { until: now + waitMs, waitMs });
+            if (!prev) {
+                this.log.warn('The CCU refuses %s%s for the configured CCU user (missing rights?); it is retried after %d min, then less often', method, typeof params.interface === 'string' ? ` on ${params.interface}` : '', Math.round(waitMs / 60_000));
+            }
+        }
+        return new JsonRpcError(message, code, undefined, 'permission');
     }
     // --- session ------------------------------------------------------
+    /** Stop handing `s` out; it is logged out (once) as soon as no request uses it. */
+    async retire(s) {
+        if (this.session === s) {
+            this.session = undefined;
+        }
+        s.retired = true;
+        await this.drain(s);
+    }
+    /** Log out a replaced session that no request uses any more. Exactly once per session. */
+    async drain(s) {
+        if (!s.retired || s.inflight > 0 || s.loggedOut) {
+            return;
+        }
+        s.loggedOut = true;
+        const body = Buffer.from(JSON.stringify({
+            version: '1.1',
+            method: 'Session.logout',
+            params: { _session_id_: s.sid },
+        }), 'utf8');
+        try {
+            await this.postJson(body);
+        }
+        catch (err) {
+            this.log.debug('Session.logout failed: %s', err.message);
+        }
+    }
+    /** Mask the password and session ids in a CCU error text, which may echo the request. */
+    scrub(text, sid) {
+        let out = String(text);
+        for (const secret of [this.auth?.password, sid, this.session?.sid]) {
+            if (secret && secret.length > 0) {
+                out = out.split(secret).join('***');
+            }
+        }
+        return out;
+    }
     async ensureSession() {
         if (!this.auth) {
             return undefined;
         }
-        if (this.sessionId) {
-            return this.sessionId;
+        if (this.session) {
+            return this.session;
         }
+        // Concurrent callers share one login, so no session is created and lost.
+        this.loginInFlight ??= this.login(this.auth).finally(() => {
+            this.loginInFlight = undefined;
+        });
+        return this.loginInFlight;
+    }
+    async login(auth) {
         const body = Buffer.from(JSON.stringify({
             version: '1.1',
             method: 'Session.login',
-            params: { username: this.auth.username, password: this.auth.password },
+            params: { username: auth.username, password: auth.password },
         }), 'utf8');
         const raw = await this.postJson(body);
         const text = raw.toString('utf8');
@@ -119,16 +278,17 @@ export class CcuJsonRpcClient {
         catch {
             throw new JsonRpcError('CCU auth: malformed JSON response');
         }
-        if (parsed.error) {
-            throw new JsonRpcError(`CCU auth failed: ${parsed.error.message ?? 'unknown'}`, parsed.error.code);
+        if (parsed && typeof parsed === 'object' && parsed.error) {
+            throw new JsonRpcError(`CCU auth failed: ${this.scrub(parsed.error.message ?? 'unknown')}`, parsed.error.code, undefined, 'auth');
         }
-        if (typeof parsed.result !== 'string' || parsed.result.length === 0) {
-            throw new JsonRpcError('CCU auth: empty session id');
+        if (!parsed || typeof parsed.result !== 'string' || parsed.result.length === 0) {
+            throw new JsonRpcError('CCU auth: empty session id', undefined, undefined, 'auth');
         }
         // The CCU may wrap the sid in literal '@' chars; normalise.
-        this.sessionId = parsed.result.replace(/^@+|@+$/g, '');
-        this.log.debug('Acquired CCU session (length=%d)', this.sessionId.length);
-        return this.sessionId;
+        const session = { sid: parsed.result.replace(/^@+|@+$/g, ''), inflight: 0, retired: false, loggedOut: false, okSeq: 0 };
+        this.session = session;
+        this.log.debug('Acquired CCU session (length=%d)', session.sid.length);
+        return session;
     }
     // --- high-level helpers -------------------------------------------
     /**
@@ -294,14 +454,18 @@ export class CcuJsonRpcClient {
             headers,
             timeout: this.timeoutMs,
         };
-        if (this.useTls) {
+        if (this.useTls && this.tlsAgent) {
+            // The agent decides how the certificate is checked; no per-request override.
+            opts.agent = this.tlsAgent;
+        }
+        else if (this.useTls) {
             opts.rejectUnauthorized = false;
         }
         return new Promise((resolve, reject) => {
             const req = reqFn(opts, (res) => {
                 if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
                     res.resume();
-                    reject(new JsonRpcError(`HTTP ${res.statusCode ?? 'unknown'}`));
+                    reject(new JsonRpcError(`HTTP ${res.statusCode ?? 'unknown'}`, undefined, undefined, 'network'));
                     return;
                 }
                 const chunks = [];
@@ -315,18 +479,22 @@ export class CcuJsonRpcClient {
                     chunks.push(chunk);
                 });
                 res.on('end', () => resolve(Buffer.concat(chunks)));
-                res.on('error', (err) => reject(new JsonRpcError('JSON-RPC response error', undefined, err)));
+                res.on('error', (err) => reject(new JsonRpcError('JSON-RPC response error', undefined, err, 'network')));
             });
             req.on('timeout', () => {
-                req.destroy(new JsonRpcError(`JSON-RPC timeout after ${this.timeoutMs} ms`));
+                req.destroy(new JsonRpcError(`JSON-RPC timeout after ${this.timeoutMs} ms`, undefined, undefined, 'network'));
             });
-            req.on('error', (err) => reject(new JsonRpcError('JSON-RPC request failed', undefined, err)));
+            req.on('error', (err) => reject(new JsonRpcError('JSON-RPC request failed', undefined, err, 'network')));
             req.write(body);
             req.end();
         });
     }
 }
 // --- helpers --------------------------------------------------------
+/** The per-method backoff key: method and, when given, the CCU interface. */
+function deniedKey(method, params) {
+    return `${method}|${typeof params.interface === 'string' ? params.interface : ''}`;
+}
 export function isSafeIdentifier(value) {
     if (typeof value !== 'string' || value.length === 0) {
         return false;

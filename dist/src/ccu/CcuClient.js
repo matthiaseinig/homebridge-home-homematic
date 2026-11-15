@@ -179,6 +179,8 @@ export class CcuClient extends EventEmitter {
     }
     async stop() {
         if (!this.started) {
+            // A failed start may have opened a JSON-RPC session; never leave it on the CCU.
+            await this.api.logout();
             return;
         }
         this.started = false;
@@ -192,7 +194,7 @@ export class CcuClient extends EventEmitter {
         }
         this.rpcClients.clear();
         await this.eventServer.stop();
-        this.api.invalidateSession();
+        await this.api.logout();
     }
     /** All devices and their channels (one JSON-RPC call). */
     listDevices() {

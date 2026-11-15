@@ -106,6 +106,66 @@
         "default": false,
         "description": "Set by the identity-preserving migration (scripts/hap-homematic-to-config.mjs --preserve-identity). Reuses hap-homematic accessory UUIDs and service layout. Do not toggle on a paired bridge: every accessory would be replaced."
       },
+      "gas": {
+        "title": "Gas meter (read-only)",
+        "type": "object",
+        "description": "HM-ES-TX-WM with gas sensor, polled through this plugin's CCU session (read-only). See docs/GAS-METER.md.",
+        "properties": {
+          "enabled": { "title": "Enabled", "type": "boolean", "default": false },
+          "name": { "title": "HomeKit name", "type": "string", "default": "Gas Meter" },
+          "address": { "title": "Channel address of the gas sensor", "type": "string", "description": "[<interface>.]<serial>:<channel>, for example BidCos-RF.<serial>:1" },
+          "interface": { "title": "CCU interface", "type": "string", "default": "BidCos-RF" },
+          "channel": { "title": "Channel", "type": "integer", "minimum": 1, "maximum": 50, "default": 1 },
+          "datapoints": {
+            "title": "Datapoints",
+            "type": "object",
+            "properties": {
+              "counter": { "title": "Counter (m³)", "type": "string", "default": "GAS_ENERGY_COUNTER" },
+              "flow": { "title": "Flow (m³/h)", "type": "string", "default": "GAS_POWER" }
+            }
+          },
+          "pollInterval": { "title": "Poll interval (s)", "type": "integer", "minimum": 30, "maximum": 600, "default": 60 },
+          "timeZone": { "title": "Time zone of the days", "type": "string", "description": "IANA name; default: this host" },
+          "calorificValue": { "title": "Calorific value (kWh/m³)", "type": "number", "minimum": 8, "maximum": 13, "default": 11.2 },
+          "zNumber": { "title": "Zustandszahl", "type": "number", "minimum": 0.8, "maximum": 1.0, "default": 0.95 },
+          "factorPeriods": {
+            "title": "Dated factors",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": { "title": "From (YYYY-MM-DD)", "type": "string" },
+                "to": { "title": "To (YYYY-MM-DD, inclusive)", "type": "string" },
+                "calorificValue": { "title": "Calorific value", "type": "number", "minimum": 8, "maximum": 13 },
+                "zNumber": { "title": "Zustandszahl", "type": "number", "minimum": 0.8, "maximum": 1.0 }
+              },
+              "required": ["from"]
+            }
+          },
+          "meterReadings": {
+            "title": "Meter readings",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": { "title": "Date (YYYY-MM-DD)", "type": "string" },
+                "time": { "title": "Time (HH:MM, local)", "type": "string" },
+                "m3": { "title": "Reading (m³)", "type": "number", "minimum": 0 }
+              },
+              "required": ["date", "m3"]
+            }
+          },
+          "bridge": { "title": "Bridge", "type": "string", "description": "host, or the name of an enabled multi-bridge. Default: the bridge whose name contains Keller, else host." },
+          "api": {
+            "title": "LAN API",
+            "type": "object",
+            "properties": {
+              "bindAddress": { "title": "Bind address", "type": "string", "description": "Literal private or loopback IP of this host; empty: API off" },
+              "port": { "title": "Port", "type": "integer", "minimum": 1024, "maximum": 65535, "default": 8766 }
+            }
+          }
+        }
+      },
       "channels":  { "title": "Exposed channels",  "type": "array", "items": { "$ref": "#/definitions/channelMapping"  }, "default": [] },
       "variables": { "title": "Exposed variables", "type": "array", "items": { "$ref": "#/definitions/variableMapping" }, "default": [] },
       "programs":  { "title": "Exposed programs",  "type": "array", "items": { "$ref": "#/definitions/programMapping"  }, "default": [] }

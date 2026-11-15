@@ -5,6 +5,7 @@
  * Building has no network side effects; publishing is the host's job.
  * The offline IID check (scripts/iid-check.mjs) uses this directly.
  */
+import { gasMappingConflict } from '../gas/placement.js';
 import { findProgramServiceByKey, findServiceByKey, findVariableServiceByKey, pickVariableService, PROGRAM_SERVICE_DEFINITIONS } from '../services/registry.js';
 import { PLUGIN_NAME } from '../settings.js';
 import { channelDisplayName, findChannel, programDisplayName, variableDisplayName } from '../util/mappings.js';
@@ -33,9 +34,21 @@ export function buildBridge(deps, entry, snapshot) {
     }));
     const built = { entry, bridge, accessories: [], skipped: [], handlers: [] };
     const builder = new AccessoryFactory(deps, entry, snapshot, built, log);
-    entry.channels.forEach((m) => builder.tryAdd('channel', m.address, () => builder.channel(m)));
+    entry.channels.forEach((m) => {
+        const conflict = gasMappingConflict(deps.gas, m);
+        if (conflict) {
+            // The gas meter device address is not logged or listed.
+            built.skipped.push({ kind: 'channel', id: 'gas meter device', reason: conflict });
+            log.warn('Gas meter mode: skipping a channel mapping (%s): %s', m.service, conflict);
+            return;
+        }
+        builder.tryAdd('channel', m.address, () => builder.channel(m));
+    });
     entry.variables.forEach((m) => builder.tryAdd('variable', m.name, () => builder.variable(m)));
     entry.programs.forEach((m) => builder.tryAdd('program', m.name, () => builder.program(m)));
+    for (const accessory of deps.extraAccessories?.(entry) ?? []) {
+        builder.addExtra(accessory);
+    }
     return built;
 }
 /** Run `step`; on failure release the handler's CCU listeners before rethrowing. */
@@ -79,6 +92,10 @@ class AccessoryFactory {
             throw new Error(`Unknown service: ${m.service}`);
         }
         const channel = findChannel(this.snapshot.devices, m.address, m.name);
+        const conflict = gasMappingConflict(this.deps.gas, m, channel.type);
+        if (conflict) {
+            throw new Error(`gas meter mode: ${conflict}`);
+        }
         const name = channelDisplayName(m, channel);
         const legacy = this.legacy(m.uuidSeed);
         return {
@@ -116,6 +133,23 @@ class AccessoryFactory {
             context: { kind: 'program', id: m.name, service: def.key, name },
             attach: (ctx) => attachOrDispose(def.build(ctx), (h) => h.attach(m.name)),
         };
+    }
+    /** A ready accessory that is not built from a mapping (the gas meter). */
+    addExtra(accessory) {
+        const id = accessory.displayName;
+        try {
+            if (this.uuids.has(accessory.UUID)) {
+                throw new Error(`accessory UUID already used on this bridge (${id})`);
+            }
+            this.built.bridge.addBridgedAccessory(accessory);
+            this.uuids.add(accessory.UUID);
+            this.built.accessories.push({ kind: 'gas', id, name: id, uuid: accessory.UUID, legacyIdentity: false });
+        }
+        catch (err) {
+            const reason = err.message;
+            this.built.skipped.push({ kind: 'gas', id, reason });
+            this.log.warn('Skipping %s: %s', id, reason);
+        }
     }
     legacy(seed) {
         return this.entry.hapHomematicIdentity && typeof seed === 'string' && seed.length > 0;
