@@ -30,10 +30,10 @@ async function setup(extra: Record<string, unknown> = {}, start = T0, dir?: stri
   const t = clock(start);
   const log = recordingLog();
   const published: CharValues[] = [];
-  let api = sharedSession(ccu.port, log);
+  let api = sharedSession(ccu.port, log, 2000, t.now);
   /** A new service on a new shared session, as after a Homebridge restart. */
   const make = (authKey = credentialKey(HOST, USER, PASSWORD)) => {
-    api = sharedSession(ccu.port, log);
+    api = sharedSession(ccu.port, log, 2000, t.now);
     return new GasService(gasSettings(extra), d, prefixed(log), {
       reader: reader(api, t.now, 60_000),
       authKey,
@@ -395,13 +395,17 @@ describe('GasService sessions', () => {
       t.add(60_000);
       await svc.pollOnce();
     }
-    // attempts at polls 0, 1, 3, 7, 15, 25, 35, 45, 55, each with one fresh session after the refused one
-    expect(ccu.logins).toBe(18);
+    // gas attempts at polls 0, 1, 3, 7, 15, 25, 35, 45, 55; a refused method itself is sent only
+    // at 0, 15 and 35 minutes (shared per-method backoff), each time replacing the session once:
+    // start (description, then UNREACH: 1 + 1 + 1) and 15 and 35 minutes (1 each)
+    expect(ccu.logins).toBe(5);
+    expect(svc.reader.authState.failures).toBe(9);
+    // one warning per refused method (the description and UNREACH), not per poll
+    expect(log.lines.filter((l) => l.includes('missing rights?'))).toHaveLength(2);
+    await stop(svc);
     expect(ccu.created).toBe(ccu.logouts);
     expect(ccu.sessions.size).toBe(0);
-    expect(svc.reader.authState.failures).toBe(9);
     expect(log.lines.join('\n')).not.toContain(USER);
-    await stop(svc);
   });
 
   it('with a wrong password: a crash loop of restarts cannot multiply the logins, nothing secret is logged', async () => {

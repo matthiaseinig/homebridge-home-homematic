@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as http from 'node:http';
+import * as https from 'node:https';
+import * as net from 'node:net';
 import { Buffer } from 'node:buffer';
 import { CcuJsonRpcClient, JsonRpcError, isSafeIdentifier } from '../../src/ccu/CcuJsonRpcClient.js';
 import { PrefixedLogger } from '../../src/util/logger.js';
@@ -465,5 +467,240 @@ describe('isSafeIdentifier', () => {
     expect(isSafeIdentifier('a"b')).toBe(false);
     expect(isSafeIdentifier('')).toBe(false);
     expect(isSafeIdentifier(42 as unknown as string)).toBe(false);
+  });
+});
+
+// --- shared session under refusals (PR #9 verifier findings) -------------
+
+interface SimStats {
+  login: number;
+  logout: number;
+  executed: Record<string, number>;
+  valid: Set<string>;
+  seq: number;
+}
+
+type SimHandler = (body: { method: string; params: Record<string, unknown> }, s: SimStats) => Promise<unknown> | unknown;
+
+/** A CCU with real sessions; `handler` answers every data call (return an `{ error }` or a result). */
+async function simCcu(handler: SimHandler): Promise<{ stats: SimStats; port: number; close: () => Promise<void> }> {
+  const stats: SimStats = { login: 0, logout: 0, executed: {}, valid: new Set(), seq: 0 };
+  const srv = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const reply = (o: unknown): void => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(o));
+      };
+      if (body.method === 'Session.login') {
+        stats.login++;
+        const sid = `S${++stats.seq}`;
+        stats.valid.add(sid);
+        return reply({ result: sid, error: null });
+      }
+      if (body.method === 'Session.logout') {
+        stats.logout++;
+        stats.valid.delete(body.params._session_id_);
+        return reply({ result: true, error: null });
+      }
+      const out = await handler(body, stats);
+      reply(out && typeof out === 'object' && 'error' in out ? { result: null, ...out } : { result: out ?? 'ok', error: null });
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+  return {
+    stats,
+    port: (srv.address() as { port: number }).port,
+    close: () => new Promise<void>((r) => { srv.close(() => r()); srv.closeAllConnections(); }),
+  };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const DENIED = { error: { code: 400, message: "access denied ('user' needed 'admin')" } };
+const EXPIRED = { error: { code: 400, message: 'access denied ( 1 )' } };
+
+function simClient(port: number, now?: () => number, log = makeLog(), password = 'secretpw') {
+  return { log, c: new CcuJsonRpcClient({ host: '127.0.0.1', port, auth: { username: 'u', password }, log: new PrefixedLogger(log, 'api'), now }) };
+}
+
+describe('CcuJsonRpcClient shared session under refusals', () => {
+  it('1000 sequential denied calls: one re-login per backoff window, one warning, other sessions untouched', async () => {
+    const ccu = await simCcu(() => DENIED);
+    let t = Date.UTC(2026, 10, 15, 12);
+    const { c, log } = simClient(ccu.port, () => t);
+    try {
+      const kinds = new Set<string>();
+      for (let i = 0; i < 1000; i++) {
+        await c.call('SysVar.getValueByName', { name: 'X' }).catch((e: JsonRpcError) => kinds.add(e.kind));
+      }
+      expect([...kinds]).toEqual(['permission']);
+      expect(ccu.stats.login).toBe(2);
+      expect(ccu.stats.logout).toBe(1);
+      expect(ccu.stats.valid.size).toBe(1);
+      // after the 10 minute wait the method is tried again (no new login: the live session is kept)
+      t += 10 * 60_000;
+      for (let i = 0; i < 100; i++) await c.call('SysVar.getValueByName', { name: 'X' }).catch(() => undefined);
+      expect(ccu.stats.login).toBe(3);
+      // the wait doubled to 20 minutes
+      t += 10 * 60_000;
+      await c.call('SysVar.getValueByName', { name: 'X' }).catch(() => undefined);
+      expect(ccu.stats.login).toBe(3);
+      expect(vi.mocked(log.warn).mock.calls.filter((x) => String(x[0]).includes('missing rights'))).toHaveLength(1);
+      await c.logout();
+      expect(ccu.stats.login).toBe(ccu.stats.logout);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('1000 concurrent denied calls share one re-login', async () => {
+    const ccu = await simCcu(async () => {
+      await sleep(1);
+      return DENIED;
+    });
+    const { c } = simClient(ccu.port);
+    try {
+      const r = await Promise.allSettled(Array.from({ length: 1000 }, () => c.call('X.denied', {})));
+      expect(r.every((x) => x.status === 'rejected')).toBe(true);
+      expect(ccu.stats.login).toBe(2);
+      expect(ccu.stats.logout).toBe(1);
+      await c.logout();
+      expect(ccu.stats.valid.size).toBe(0);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('allowed setValue calls next to a denied method never fail and run once each', async () => {
+    const ccu = await simCcu(async (b, s) => {
+      await sleep(Math.random() * 10);
+      if (!s.valid.has(String(b.params._session_id_))) return EXPIRED;
+      if (b.method === 'X.denied') return DENIED;
+      s.executed[b.method] = (s.executed[b.method] ?? 0) + 1;
+      return 'ok';
+    });
+    const { c } = simClient(ccu.port);
+    try {
+      let failed = 0;
+      for (let round = 0; round < 50; round++) {
+        await Promise.all([
+          ...Array.from({ length: 5 }, () => c.call('X.denied', {}).catch(() => undefined)),
+          ...Array.from({ length: 5 }, () => c.call('Interface.setValue', { interface: 'HmIP-RF' }).catch(() => { failed++; })),
+        ]);
+      }
+      expect(failed).toBe(0);
+      expect(ccu.stats.executed['Interface.setValue']).toBe(250);
+      expect(ccu.stats.login).toBeLessThanOrEqual(2);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('an expired session with 40 concurrent setValue: one re-login, each executed once', async () => {
+    const ccu = await simCcu(async (b, s) => {
+      await sleep(2);
+      if (!s.valid.has(String(b.params._session_id_))) return EXPIRED;
+      s.executed[b.method] = (s.executed[b.method] ?? 0) + 1;
+      return 'ok';
+    });
+    const { c } = simClient(ccu.port);
+    try {
+      await c.call('Interface.getValue', {});
+      ccu.stats.valid.clear();
+      const before = ccu.stats.login;
+      const r = await Promise.allSettled(Array.from({ length: 40 }, () => c.call('Interface.setValue', {})));
+      expect(r.every((x) => x.status === 'fulfilled')).toBe(true);
+      expect(ccu.stats.login - before).toBe(1);
+      expect(ccu.stats.executed['Interface.setValue']).toBe(40);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('never retries a write on a loose hint: Program.execute with "login" in its error runs once', async () => {
+    const ccu = await simCcu((b, s) => {
+      s.executed[b.method] = (s.executed[b.method] ?? 0) + 1;
+      return { error: { code: 501, message: 'Program.execute: device unreachable since last login' } };
+    });
+    const { c } = simClient(ccu.port);
+    try {
+      await expect(c.call('Program.execute', { id: '1' })).rejects.toMatchObject({ kind: 'protocol' });
+      expect(ccu.stats.executed['Program.execute']).toBe(1);
+      expect(ccu.stats.login).toBe(1);
+      expect(ccu.stats.logout).toBe(0);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('detects the session error on the raw text, before masking a short password', async () => {
+    const ccu = await simCcu((b, s) => (s.valid.has(String(b.params._session_id_)) ? 'ok' : EXPIRED));
+    const { c } = simClient(ccu.port, undefined, makeLog(), 'e');
+    try {
+      await c.call('Interface.getValue', {});
+      ccu.stats.valid.clear();
+      await expect(c.call('Interface.getValue', {})).resolves.toBe('ok');
+      expect(ccu.stats.login).toBe(2);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('ends the wait of a method when it succeeds again', async () => {
+    let allowed = false;
+    const ccu = await simCcu((b) => (b.method === 'X.m' && !allowed ? DENIED : 'ok'));
+    let t = 0;
+    const { c } = simClient(ccu.port, () => t);
+    try {
+      await expect(c.call('X.m', { interface: 'BidCos-RF' })).rejects.toMatchObject({ kind: 'permission' });
+      // another interface is a separate key
+      await expect(c.call('X.m', { interface: 'HmIP-RF' })).rejects.toMatchObject({ kind: 'permission' });
+      await expect(c.call('X.m', { interface: 'BidCos-RF' })).rejects.toThrow(/paused until/);
+      allowed = true;
+      t += 10 * 60_000;
+      await expect(c.call('X.m', { interface: 'BidCos-RF' })).resolves.toBe('ok');
+      allowed = false;
+      await expect(c.call('X.m', { interface: 'BidCos-RF' })).rejects.toMatchObject({ kind: 'permission' });
+      t += 10 * 60_000; // the wait starts again at 10 minutes, not 20: the call is sent, not paused
+      const err = (await c.call('X.m', { interface: 'BidCos-RF' }).catch((e: Error) => e)) as JsonRpcError;
+      expect(err.kind).toBe('permission');
+      expect(err.message).not.toMatch(/paused until/);
+      await expect(c.call('X.m', { interface: 'BidCos-RF' })).rejects.toThrow(/paused until/);
+    } finally {
+      await ccu.close();
+    }
+  });
+
+  it('a session error without credentials fails that call without a login', async () => {
+    const ccu = await simCcu(() => EXPIRED);
+    const c = new CcuJsonRpcClient({ host: '127.0.0.1', port: ccu.port, log: new PrefixedLogger(makeLog(), 'api') });
+    try {
+      await expect(c.call('Interface.getValue', {})).rejects.toMatchObject({ kind: 'session' });
+      expect(ccu.stats.login).toBe(0);
+    } finally {
+      await ccu.close();
+    }
+  });
+});
+
+describe('CcuJsonRpcClient tlsAgent', () => {
+  it('sends HTTPS requests through a given agent, without the unverified override', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    class SpyAgent extends https.Agent {
+      override createConnection(options: Record<string, unknown>, cb?: (err: Error | null, s?: net.Socket) => void): net.Socket {
+        seen.push(options);
+        const sock = net.connect(1, '127.0.0.1');
+        cb?.(null, sock);
+        return sock;
+      }
+    }
+    const agent = new SpyAgent();
+    const c = new CcuJsonRpcClient({ host: '127.0.0.1', port: 1, useTls: true, tlsAgent: agent, timeoutMs: 1000, log: new PrefixedLogger(makeLog(), 'tls') });
+    await expect(c.call('Interface.getValue', {})).rejects.toMatchObject({ kind: 'network' });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.rejectUnauthorized).not.toBe(false);
+    agent.destroy();
   });
 });

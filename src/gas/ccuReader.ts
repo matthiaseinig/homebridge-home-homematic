@@ -154,7 +154,7 @@ export class GasCcuReader {
       result = await this.session.call(method, params);
     } catch (err) {
       const message = this.clean(err instanceof Error ? err.message : String(err));
-      if (err instanceof JsonRpcError && (err.kind === 'auth' || err.kind === 'session')) {
+      if (err instanceof JsonRpcError && (err.kind === 'auth' || err.kind === 'session' || err.kind === 'permission')) {
         throw this.failAuth(err.kind === 'auth'
           ? `CCU login rejected: ${message}`
           : `CCU refused a fresh session (check the rights of the CCU user): ${message}`);

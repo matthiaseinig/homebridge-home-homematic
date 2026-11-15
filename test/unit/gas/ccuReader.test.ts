@@ -108,36 +108,46 @@ describe('gas CCU backoff (verifier finding 1)', () => {
     const ccu = await fakeCcu();
     ccu.noRights = true;
     const t = clock(T0);
-    const api = sharedSession(ccu.port);
+    const api = sharedSession(ccu.port, undefined, 2000, t.now);
     const r = reader(api, t.now, 60_000);
     const attempts: number[] = [];
+    const sent: number[] = [];
     for (let poll = 0; poll < 61; poll++) {
       const before = ccu.logins;
+      const blocked = r.retryAt !== undefined;
       const err = (await r.getValues(IFACE, `${ADDRESS}:1`).catch((e: Error) => e)) as GasCcuError;
       expect(err).toBeInstanceOf(GasCcuError);
       expect(err.kind).toBe('auth');
-      if (ccu.logins > before) {
+      if (!blocked) {
         attempts.push(t.now());
-        // one fresh session per attempt: the refused one and its replacement, both logged out
-        expect(ccu.logins - before).toBe(2);
         expect(err.message).toMatch(/rights of the CCU user/);
       } else {
         expect(err.message).toMatch(/paused/);
       }
-      expect(ccu.sessions.size).toBe(0);
+      if (ccu.logins > before) {
+        sent.push(t.now());
+        // the refused session is replaced once (the first time after the initial login),
+        // the fresh one is refused too: a rights problem
+        expect(ccu.logins - before).toBe(sent.length === 1 ? 2 : 1);
+      }
       t.add(60_000);
     }
     const waits = attempts.slice(1).map((a, i) => (a - attempts[i]!) / 1000);
     expect(waits).toEqual([60, 120, 240, 480, 600, 600, 600, 600]);
-    expect(Math.max(...waits) * 1000).toBe(MAX_AUTH_BACKOFF_MS);
     expect(r.authState.failures).toBe(9);
-    expect(ccu.logins).toBe(18);
-    expect(ccu.created).toBe(18);
-    expect(ccu.logouts).toBe(18);
+    // the method itself waits 10 min, then 20, then 40 (shared per-method backoff): requests on the wire stay O(1)
+    expect(sent.map((x) => (x - T0) / 1000)).toEqual([0, 900, 2100]);
+    expect(ccu.logins).toBe(4);
+    // only the live shared session is still open; every replaced one was logged out
+    expect(ccu.sessions.size).toBe(1);
+    await api.logout();
+    expect(ccu.created).toBe(4);
+    expect(ccu.logouts).toBe(4);
+    expect(ccu.sessions.size).toBe(0);
 
-    // Rights fixed: the next attempt after the wait succeeds and only that ends the backoff.
+    // Rights fixed: the next attempt after both waits succeeds and only that ends the backoff.
     ccu.noRights = false;
-    t.set(r.retryAt!);
+    t.set(T0 + 2 * 3_600_000);
     await expect(r.getValues(IFACE, `${ADDRESS}:1`)).resolves.toBeDefined();
     expect(r.authState).toEqual({ failures: 0, blockedUntil: 0 });
     await api.logout();

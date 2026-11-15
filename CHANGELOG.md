@@ -18,12 +18,19 @@
 - **Gas device never mapped twice.** While the gas meter is on, a mapping of
   its device is skipped, and a `POWERMETER_IGL` channel mapped as power
   meter logs a warning instead of becoming an Outlet.
-- **CCU session hygiene (all JSON-RPC calls).** A session the CCU refuses
-  (`access denied` now counts, which is how the CCU answers an expired
-  session) is logged out before it is replaced, the replacement is logged
-  out too when it is refused again, concurrent first calls share one login,
-  the session is logged out when the plugin stops, and the password and
-  session id are masked in CCU error texts.
+- **CCU session hygiene (all JSON-RPC calls).** `access denied` (how the CCU
+  answers an expired session) now replaces the session once, shared by
+  concurrent callers. A method refused again with the fresh session lacks
+  the rights: the session is kept, only that call fails, and the method
+  waits 10 minutes (doubling to 1 hour, one warning) before it is sent
+  again; a success ends the wait. Replaced sessions are logged out once no
+  request uses them, the live one when the plugin stops. Writes
+  (`Interface.setValue`, `Program.execute`, ...) are retried only on a real
+  session error. Session errors are detected on the raw CCU text; the
+  password and session id are masked afterwards.
+- **TLS agent option.** `CcuJsonRpcClient` accepts an optional `tlsAgent`
+  for HTTPS (for example a pinned certificate); without it the behaviour is
+  unchanged.
 - **Gas backoff.** A rejected login, or a session that logs in but whose
   data call is refused, doubles the gas meter's wait (one poll interval up
   to 10 minutes, kept across restarts); only a successful data call ends it.

@@ -192,11 +192,12 @@ export function prefixed(log: Logging): PrefixedLogger {
 }
 
 /** The plugin's shared JSON-RPC session against the fake CCU. */
-export function sharedSession(port: number, log: Logging = recordingLog(), timeoutMs = 2000): CcuJsonRpcClient {
+export function sharedSession(port: number, log: Logging = recordingLog(), timeoutMs = 2000, now?: () => number): CcuJsonRpcClient {
   return new CcuJsonRpcClient({
     host: HOST,
     port,
     timeoutMs,
+    now,
     auth: { username: USER, password: PASSWORD },
     log: new PrefixedLogger(log, 'api'),
   });
