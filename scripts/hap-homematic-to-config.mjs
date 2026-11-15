@@ -37,7 +37,20 @@
  *                             the bridges here (mode 0600). Multi-bridge: all listed
  *                             bridges, or only those named by --persist-bridge.
  *   --persist-bridge <name>   Restrict --persist-out to this bridge; repeatable.
- *   --preserve-identity       --per-bridge-blocks only (multi-bridge always preserves).
+ *   --preserve-identity       --per-bridge-blocks only (multi-bridge preserves unless
+ *                             --new-identities).
+ *   --new-identities          Multi-bridge: give every bridge a NEW HomeKit identity
+ *                             instead of transplanting the hap-homematic one, so the
+ *                             old bridges can stay paired and running until the new
+ *                             ones are paired (newIdentity=true, no bridge UUID, no
+ *                             hap-homematic accessory UUIDs). Username and port derive
+ *                             from the instance id (stable across runs); pin and
+ *                             setupID are random. Bridges already in the --base
+ *                             block (same name, newIdentity) keep their username,
+ *                             pin, setupID, port and enabled state, so a re-run
+ *                             changes nothing.
+ *   --host-bridge-from-base   Multi-bridge: keep the --base block's _bridge (name,
+ *                             username, port), e.g. the existing child bridge.
  *
  * The output contains pairing pins and, with --base, CCU credentials.
  * Treat it like a password file. Nothing secret is printed.
@@ -68,6 +81,8 @@ function parseArgs(argv) {
       return v;
     };
     if (a === '--preserve-identity') opts.preserveIdentity = true;
+    else if (a === '--new-identities') opts.newIdentities = true;
+    else if (a === '--host-bridge-from-base') opts.hostBridgeFromBase = true;
     else if (a === '--per-bridge-blocks') opts.perBridgeBlocks = true;
     else if (a === '--bridge') opts.bridges.push(next());
     else if (a === '--enable') opts.enable.push(next());
@@ -117,6 +132,31 @@ function randomPin() {
   }
 }
 
+/** A random HAP setupID (4 characters 0-9 A-Z). */
+function randomSetupId() {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  return Array.from({ length: 4 }, () => chars[randomInt(chars.length)]).join('');
+}
+
+/**
+ * New identity for a hap-homematic bridge: the plugin's deterministic
+ * username and port for the instance id (bridgeIdentityFor), a fresh pin
+ * and setupID, or the identity this bridge already has in the --base block.
+ * Never one of the hap-homematic usernames, which stay paired meanwhile.
+ */
+function newIdentityFor(b, previous, oldUsernames) {
+  if (previous && previous.newIdentity === true && previous.username && previous.pincode && previous.port) {
+    const kept = { username: String(previous.username).toUpperCase(), pincode: previous.pincode, port: previous.port };
+    if (previous.setupID) kept.setupID = previous.setupID;
+    if (!oldUsernames.has(kept.username)) return kept;
+  }
+  let { username, port } = b.bridge;
+  for (let i = 1; oldUsernames.has(username.toUpperCase()); i++) {
+    ({ username, port } = bridgeIdentityFor(`${b.instanceUuid}:${i}`));
+  }
+  return { username, pincode: randomPin(), setupID: randomSetupId(), port };
+}
+
 function writeSecretFile(file, text) {
   fs.writeFileSync(file, text, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
@@ -125,7 +165,7 @@ function writeSecretFile(file, text) {
 const opts = parseArgs(process.argv.slice(2));
 if (opts.help || !opts.backup) {
   process.stderr.write('usage: hap-homematic-to-config.mjs <backup.tar.gz> [--per-bridge-blocks [--preserve-identity]] [--bridge <name>]... '
-    + '[--enable <name>]... [--name <block>] [--advertiser ciao] [--smoke-bridge <address>] '
+    + '[--enable <name>]... [--new-identities] [--host-bridge-from-base] [--name <block>] [--advertiser ciao] [--smoke-bridge <address>] '
     + '[--event-port-base 9875] [--base block.json | --ccu-ip host] [--out file] [--persist-out dir [--persist-bridge <name>]...]\n');
   process.exit(opts.help ? 0 : 2);
 }
@@ -133,10 +173,19 @@ if (!Number.isInteger(opts.eventPortBase) || opts.eventPortBase < 1024 || opts.e
   throw new Error('--event-port-base must be an integer in [1024, 65000]');
 }
 const multi = !opts.perBridgeBlocks;
-if (!multi && (opts.enable.length || opts.smokeBridge)) {
-  throw new Error('--enable and --smoke-bridge need the multi-bridge layout');
+if (!multi && (opts.enable.length || opts.smokeBridge || opts.newIdentities || opts.hostBridgeFromBase)) {
+  throw new Error('--enable, --smoke-bridge, --new-identities and --host-bridge-from-base need the multi-bridge layout');
 }
-const preserve = multi || opts.preserveIdentity === true;
+if (opts.newIdentities && opts.persistOut) {
+  throw new Error('--persist-out copies the hap-homematic pairing files; it does not go with --new-identities');
+}
+if (opts.hostBridgeFromBase && !opts.base) {
+  throw new Error('--host-bridge-from-base needs --base');
+}
+if (opts.newIdentities && opts.smokeBridge) {
+  throw new Error('--smoke-bridge is for the transplant layout; with --new-identities every bridge is already new');
+}
+const preserve = (multi && !opts.newIdentities) || opts.preserveIdentity === true;
 
 const tarball = fs.readFileSync(opts.backup);
 const report = await importBackupTarball(tarball);
@@ -173,7 +222,51 @@ const eventServer = (port) => ({ host: base.eventServer?.host ?? '0.0.0.0', port
 let output;
 let persistFor;
 let summary;
-if (multi) {
+if (multi && opts.newIdentities) {
+  const enable = new Set(opts.enable);
+  const previous = new Map((base.multiBridge?.bridges ?? []).map((x) => [x.name, x]));
+  const oldUsernames = new Set(Object.values(instances).map((i) => String(i.user ?? '').toUpperCase()).filter(Boolean));
+  const hostBridge = opts.hostBridgeFromBase ? base._bridge : undefined;
+  if (opts.hostBridgeFromBase && (typeof hostBridge?.username !== 'string' || !Number.isInteger(hostBridge?.port))) {
+    throw new Error('--host-bridge-from-base: the --base block has no _bridge with username and port');
+  }
+  const taken = new Set([opts.eventPortBase, hostBridge?.port].filter(Boolean));
+  const bridges = selected.map(({ b }) => {
+    const prev = previous.get(b.name);
+    const id = newIdentityFor(b, prev, oldUsernames);
+    while (taken.has(id.port)) id.port += 1;
+    taken.add(id.port);
+    const entry = {
+      name: b.name,
+      // A bridge kept from --base stays enabled: disabling it would take a
+      // paired bridge off the network.
+      enabled: enable.has(instanceName(b)) || (prev?.newIdentity === true && prev.enabled === true),
+      newIdentity: true,
+      hapHomematicIdentity: false,
+      username: id.username,
+      pincode: id.pincode,
+      port: id.port,
+      channels: b.channels,
+      variables: b.variables,
+      programs: b.programs,
+    };
+    if (id.setupID) entry.setupID = id.setupID;
+    return entry;
+  });
+  const host = hostBridge
+    ? { ...(hostBridge.name ? { name: hostBridge.name } : {}), username: hostBridge.username, port: hostBridge.port }
+    : { name: opts.name, ...bridgeIdentityFor(`multiBridge:${opts.name}`) };
+  output = [{
+    platform: 'HomematicHap',
+    name: opts.name,
+    ...common(),
+    eventServer: eventServer(opts.eventPortBase),
+    multiBridge: { advertiser: opts.advertiser, bridges },
+    _bridge: host,
+  }];
+  persistFor = [];
+  summary = `1 multi-bridge block, ${bridges.length} bridge(s), ${bridges.filter((x) => x.enabled).length} enabled, new identities`;
+} else if (multi) {
   const enable = new Set(opts.enable);
   const bridges = selected.map(({ b }) => {
     const entry = {

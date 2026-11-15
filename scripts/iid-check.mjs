@@ -20,6 +20,8 @@
  * devices.json / variables.json are the files from a hap-homematic backup.
  * Output: names of bridges and HAP service/characteristic types, and counts.
  * No pins, keys or setup ids are read from or written to anywhere.
+ * Bridges with `newIdentity: true` need no IdentifierCache: they are built
+ * and get fresh ids, and only an empty bridge counts as a mismatch.
  * Exit code 0 when there is no mismatch, 1 otherwise.
  */
 
@@ -177,15 +179,26 @@ for (const entry of entries) {
   const r = { bridge: entry.name, accessories: 0, skipped: [], aidKept: 0, aidNew: [], bridgeUuidKnown: false,
     keptServices: 0, keptChars: 0, addedServices: [], addedChars: [], lostServices: [], lostChars: [], lostAccessories: [], mismatches: [] };
   results.push(r);
-  if (!fs.existsSync(cacheFile)) {
-    r.mismatches.push(entry.newIdentity ? 'new identity (no cache expected)' : 'IdentifierCache file missing');
-    if (entry.newIdentity) r.mismatches.length = 0;
+  if (!fs.existsSync(cacheFile) && !entry.newIdentity) {
+    r.mismatches.push('IdentifierCache file missing');
     continue;
   }
-  const original = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).cache;
   const built = buildBridge({ hap, ccu, log, version: PLUGIN_VERSION }, entry, { devices, variables });
   r.accessories = built.accessories.length;
   r.skipped = built.skipped.map((s) => `${s.kind} ${s.id}: ${s.reason}`);
+  if (entry.newIdentity) {
+    // A new identity has no ids to keep: check that it builds and that
+    // HAP-NodeJS can assign ids, as on the first publish.
+    r.newIdentity = true;
+    if (!built.bridge.getService(hap.Service.ProtocolInformation)) {
+      built.bridge.addService(hap.Service.ProtocolInformation);
+    }
+    built.bridge._assignIDs(new IdentifierCache(entry.username));
+    built.handlers.forEach((h) => h.dispose?.());
+    if (r.accessories === 0) r.mismatches.push('no accessory could be built (the bridge would not be published)');
+    continue;
+  }
+  const original = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).cache;
   // What Accessory.publish() adds before assigning ids.
   if (!built.bridge.getService(hap.Service.ProtocolInformation)) {
     built.bridge.addService(hap.Service.ProtocolInformation);
@@ -274,6 +287,12 @@ if (opts.json) {
   fs.writeFileSync(opts.json, `${JSON.stringify({ totals, results }, null, 2)}\n`, { mode: 0o600 });
 }
 for (const r of results) {
+  if (r.newIdentity) {
+    process.stdout.write(`${r.mismatches.length ? 'MISMATCH' : 'ok      '} ${r.bridge}: ${r.accessories} acc, new identity`
+      + `, skipped ${r.skipped.length}\n`);
+    for (const m of [...r.mismatches, ...r.skipped]) process.stdout.write(`    ! ${m}\n`);
+    continue;
+  }
   process.stdout.write(`${r.mismatches.length ? 'MISMATCH' : 'ok      '} ${r.bridge}: ${r.accessories} acc, AID kept ${r.aidKept}`
     + `, IIDs kept ${r.keptServices} svc/${r.keptChars} char, added ${r.addedServices.length} svc/${r.addedChars.length} char`
     + `, lost ${r.lostServices.length} svc/${r.lostChars.length} char, skipped ${r.skipped.length}\n`);

@@ -221,7 +221,8 @@ node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport"
   `IdentifierCache` files are in Homebridge's `persist/` directory and its
   pin and setupID match them. Otherwise it is skipped with an error, never
   re-created under the old username. `newIdentity: true` lifts this for a
-  throwaway smoke-test bridge (`--smoke-bridge <channel>`).
+  smoke-test bridge (`--smoke-bridge <channel>`) and for bridges imported
+  with `--new-identities` (below).
 - A bridge whose HAP port is in use, or that would have no accessory, is
   skipped; the others start.
 - Instance ids of characteristics that appear only after the first CCU
@@ -236,7 +237,39 @@ node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport"
 `scripts/iid-check.mjs` checks a block offline before any cutover: it
 builds every bridge with the plugin code against a copy of its
 IdentifierCache (no publishing, no network) and reports kept, added and
-lost accessory and instance ids; it exits 1 on any mismatch.
+lost accessory and instance ids; it exits 1 on any mismatch. Bridges with
+a new identity are built against a fresh cache; only an empty one counts
+as a mismatch.
+
+### Multi-bridge mode with new identities (pair next to the old bridges)
+
+If you would rather pair fresh bridges while hap-homematic keeps running
+(no identity transplant, no persist files, no "never run both" window),
+generate the block with `--new-identities`:
+
+```bash
+npm run build
+node scripts/hap-homematic-to-config.mjs backup.tar.gz --new-identities \
+  --base current-block.json --host-bridge-from-base --out block.json
+node scripts/multi-bridge-enable.mjs block.json --bridge "HomeMatic Carport" ...
+```
+
+- Every hap-homematic bridge that publishes devices becomes one bridge
+  with the same name (`HomeMatic <instance name>`) and the same mappings.
+  Bridges without devices are left out (an empty bridge is never
+  published).
+- Each bridge gets `newIdentity: true` and `hapHomematicIdentity: false`.
+  Its username and port derive from the hap-homematic instance id (the
+  same on every run, never one of the hap-homematic usernames); pin and
+  setupID are random. A bridge already present in the `--base` block
+  keeps its username, pin, setupID, port and enabled state, so re-running
+  the import does not invalidate a pairing.
+- `--host-bridge-from-base` keeps the `--base` block's `_bridge`, so the
+  existing Homebridge child bridge keeps its identity and can be restarted
+  on its own.
+- Pair each bridge in the Home app (the pin is in the block's
+  `multiBridge.bridges[].pincode`), then remove the matching hap-homematic
+  bridge from the Home app, so no device shows up twice.
 
 ## What the importer does NOT do
 

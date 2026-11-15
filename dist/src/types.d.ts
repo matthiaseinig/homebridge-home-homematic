@@ -69,8 +69,10 @@ export interface MultiBridgeEntry {
     category: number;
     /**
      * Allow publishing without transplanted persist files (a new identity is
-     * created). Only for a throwaway smoke-test bridge; transplanted bridges
-     * must find their AccessoryInfo and IdentifierCache or are not published.
+     * created): a smoke-test bridge, or a bridge imported with
+     * `--new-identities` that is paired as a new bridge next to the still
+     * running hap-homematic one. Transplanted bridges must find their
+     * AccessoryInfo and IdentifierCache or are not published.
      */
     newIdentity: boolean;
     /** Reuse hap-homematic accessory UUIDs and service subtypes. Default true. */
