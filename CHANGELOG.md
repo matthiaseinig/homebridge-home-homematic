@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.7.1
+
+- **XML-RPC event subscription on a CCU with authentication enabled.**
+  With "Authentication" on (CCU Settings, Control panel, Security) every
+  XML-RPC port answers HTTP 401, which the plugin only reported as
+  `init failed: Invalid XML-RPC message`, so no bridge was ever published.
+  The `ccuAuth` credentials are now also sent as HTTP Basic auth on the
+  XML-RPC ports (init, getValue, setValue), and a non-XML-RPC answer is
+  reported with the likely cause (401, `ccuAuth` missing or rejected).
+  No Authorization header is sent when `ccuAuth` is off.
+- **TLS XML-RPC.** With `useTls` the XML-RPC subscription uses the CCU's
+  TLS ports (42001 BidCos-RF, 42010 HmIP-RF, 42000 BidCos-Wired, 49292
+  VirtualDevices; `interfacePorts` overrides are used as TLS ports), and
+  credentials never go over plain HTTP (CUxD has no TLS port and is reached
+  without them). The CCU's self-signed certificate is accepted only with
+  the new `tlsCertFingerprint` (pins exactly that certificate; a different
+  one ends the connection before the request is sent) or
+  `tlsAllowSelfSigned`. With `ccuAuth` and without `useTls`, one warning
+  at start says the credentials cross the network readable.
+- **External XML-RPC ports for a remote CCU.** `Interface.listInterfaces`
+  on a CCU3 / RaspberryMatic reports CCU-internal loopback URLs
+  (`127.0.0.1:32001`, `:32010`, `:39292/groups`), which only listen on the
+  CCU itself; init on them timed out. Loopback URLs are now ignored for a
+  remote CCU, so the external ports 2001 / 2010 / 9292 are used.
+  `interfacePorts` still overrides both.
+- **Backoff for the multi-bridge CCU retry loop.** The wait after a failed
+  CCU connection attempt now doubles from `retrySeconds` up to 5 minutes
+  (or `retrySeconds`, when that is longer) instead of a fixed 30 s, so a
+  broken setup no longer hits the CCU twice a minute for hours. Every
+  failed attempt logs its CCU session out (session handling from 1.7.0; a
+  regression test now covers the retry loop end to end).
+
 ## 1.7.0
 
 - **Read-only gas meter.** New `gas` block (off by default): an HM-ES-TX-WM

@@ -64,3 +64,12 @@ export declare class MultiBridgeHost {
     private publishOne;
     private disposeHandlers;
 }
+/** Longest wait between two CCU connection attempts (unless retrySeconds is longer). */
+export declare const MAX_RETRY_DELAY_SECONDS = 300;
+/**
+ * Exponential backoff for CCU connection attempts: retrySeconds after the
+ * first failure, doubling per attempt, capped at MAX_RETRY_DELAY_SECONDS
+ * (or retrySeconds when that is configured higher). Keeps a broken CCU
+ * setup from hammering the CCU every few seconds for hours.
+ */
+export declare function retryDelaySeconds(retrySeconds: number, attempt: number): number;

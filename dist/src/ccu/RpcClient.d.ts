@@ -6,6 +6,7 @@
  */
 import type { PrefixedLogger } from '../util/logger.js';
 import type { CcuInterfaceId } from '../types.js';
+import { type CcuTlsOptions } from './ccuTls.js';
 export declare const INTERFACE_PORTS: Record<CcuInterfaceId, number>;
 export interface RpcClientOptions {
     interfaceId: CcuInterfaceId;
@@ -15,6 +16,20 @@ export interface RpcClientOptions {
     callbackUrl: string;
     /** Identifier the CCU will tag callbacks with. */
     callbackId: string;
+    /**
+     * HTTP Basic credentials for the CCU's XML-RPC ports. Required when the
+     * CCU has "Authentication" enabled (Settings, Control panel, Security):
+     * every RPC port then answers 401 without them.
+     */
+    auth?: {
+        username: string;
+        password: string;
+    };
+    /**
+     * Talk HTTPS to the port (a CCU TLS XML-RPC port such as 42001). Without
+     * it the port is plain HTTP, and `auth` crosses the network readable.
+     */
+    tls?: CcuTlsOptions;
     log: PrefixedLogger;
     /**
      * Inject the underlying transport for tests. The default uses
@@ -43,6 +58,8 @@ export declare class RpcClient {
     private readonly port;
     private readonly callbackUrl;
     private readonly callbackId;
+    private readonly auth;
+    private readonly tls;
     private readonly log;
     private transport;
     private readonly transportFactory?;
@@ -50,6 +67,13 @@ export declare class RpcClient {
     private subscribed;
     constructor(opts: RpcClientOptions);
     ensureTransport(): Promise<RpcTransport>;
+    /**
+     * homematic-xmlrpc ignores the HTTP status, so a CCU 401 page (HTML) only
+     * surfaces as "Invalid XML-RPC message". Say what that usually means.
+     */
+    private nonXmlRpcHint;
+    /** A self-signed CCU certificate needs an explicit setting. */
+    private tlsHint;
     /** Subscribe to events. Idempotent. */
     subscribe(): Promise<void>;
     private probeReachable;
@@ -61,6 +85,11 @@ export declare class RpcClient {
     close(): Promise<void>;
     isSubscribed(): boolean;
 }
+/** `Basic <base64(user:pass)>`, the scheme the CCU's RPC ports ask for. Exported for tests. */
+export declare function basicAuthHeader(auth: {
+    username: string;
+    password: string;
+}): string;
 /**
  * Monkey-patch homematic-xmlrpc's Deserializer to ignore non-spec wrapping
  * elements such as `<META>`. The default behaviour is to error out with

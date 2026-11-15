@@ -7,6 +7,7 @@
  * configured").
  */
 
+import { normalizeFingerprint } from '../ccu/ccuTls.js';
 import { normalizeGasConfig, type GasSettings } from '../gas/config.js';
 import { resolveMultiBridgeConfig } from '../multiBridge/config.js';
 import { DEFAULT_SLAT_WRITE_MODE, SLAT_WRITE_MODES, type SlatWriteMode } from '../services/slatWriter.js';
@@ -66,6 +67,7 @@ export function resolveConfig(raw: RawConfig): ResolvedConfig {
   };
 
   const useTls = Boolean(raw.useTls ?? false);
+  const tls = resolveTls(raw);
 
   const ccuAuth = {
     enabled: Boolean(raw.ccuAuth?.enabled ?? false),
@@ -121,6 +123,7 @@ export function resolveConfig(raw: RawConfig): ResolvedConfig {
     interfaces,
     interfacePorts,
     useTls,
+    tls,
     ccuAuth,
     eventServer: { host: evHost, port: evPort, watchdogSeconds: evWatchdog },
     slatWriteMode,
@@ -190,4 +193,17 @@ function withMultiBridge(base: ResolvedConfig, raw: RawConfig): ResolvedConfig {
     hapHomematicIdentity: true,
     multiBridge,
   };
+}
+
+function resolveTls(raw: RawConfig): ResolvedConfig['tls'] {
+  const allowSelfSigned = raw.tlsAllowSelfSigned === true;
+  const fp = raw.tlsCertFingerprint;
+  if (fp === undefined || fp === null || fp === '') {
+    return { allowSelfSigned };
+  }
+  const fingerprint256 = typeof fp === 'string' ? normalizeFingerprint(fp) : undefined;
+  if (!fingerprint256) {
+    throw new ConfigError('tlsCertFingerprint must be a SHA-256 fingerprint (64 hex digits, colons optional)');
+  }
+  return { allowSelfSigned, fingerprint256 };
 }

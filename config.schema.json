@@ -38,12 +38,12 @@
       "interfacePorts": {
         "title": "XML-RPC port overrides",
         "type": "object",
-        "description": "Override the XML-RPC ports the plugin uses to talk to each CCU interface. Leave blank to auto-discover via Interface.listInterfaces. Set explicitly only if the auto-discovered port is not reachable from this Homebridge host (e.g. blocked by the CCU firewall).",
+        "description": "Override the XML-RPC ports the plugin uses to talk to each CCU interface. Leave blank to auto-discover via Interface.listInterfaces (CCU-internal loopback ports are ignored for a remote CCU, which leaves the external defaults 2001 / 2010 / 9292). Set explicitly only if the port in use is not reachable from this Homebridge host (e.g. blocked by the CCU firewall).",
         "properties": {
-          "BidCos-RF":      { "title": "BidCos-RF port",      "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "32001" },
-          "HmIP-RF":        { "title": "HmIP-RF port",        "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "32010" },
-          "BidCos-Wired":   { "title": "BidCos-Wired port",   "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "32000" },
-          "VirtualDevices": { "title": "VirtualDevices port", "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "39292" },
+          "BidCos-RF":      { "title": "BidCos-RF port",      "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "2001" },
+          "HmIP-RF":        { "title": "HmIP-RF port",        "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "2010" },
+          "BidCos-Wired":   { "title": "BidCos-Wired port",   "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "2000" },
+          "VirtualDevices": { "title": "VirtualDevices port", "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "9292" },
           "CUxD":           { "title": "CUxD port",           "type": "integer", "minimum": 1, "maximum": 65535, "placeholder": "8701"  }
         }
       },
@@ -51,7 +51,18 @@
         "title": "Use TLS to talk to CCU",
         "type": "boolean",
         "default": false,
-        "description": "Use HTTPS for ReGa script calls. CCU self-signed certificates are accepted."
+        "description": "Use HTTPS for the JSON API and the TLS XML-RPC ports (42001 / 42010 / 49292), so the ccuAuth credentials never cross the network readable. The XML-RPC ports need tlsCertFingerprint (recommended) or tlsAllowSelfSigned for the CCU's self-signed certificate."
+      },
+      "tlsCertFingerprint": {
+        "title": "CCU certificate SHA-256 fingerprint",
+        "type": "string",
+        "description": "Pins the CCU's certificate for the TLS XML-RPC ports: only this certificate is accepted. Get it with: openssl s_client -connect <ccu>:42001 </dev/null | openssl x509 -noout -fingerprint -sha256"
+      },
+      "tlsAllowSelfSigned": {
+        "title": "Accept any CCU certificate (no pinning)",
+        "type": "boolean",
+        "default": false,
+        "description": "Accept any certificate on the TLS XML-RPC ports. Encrypted, but not protected against a man in the middle. Prefer tlsCertFingerprint."
       },
       "ccuAuth": {
         "title": "CCU authentication",

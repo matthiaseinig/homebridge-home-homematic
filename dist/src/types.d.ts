@@ -33,6 +33,11 @@ export interface ResolvedConfig {
     /** Manual XML-RPC port overrides per interface; takes precedence over discovery. */
     interfacePorts: Partial<Record<CcuInterfaceId, number>>;
     useTls: boolean;
+    /** Certificate acceptance for the TLS XML-RPC ports (useTls). */
+    tls: {
+        allowSelfSigned: boolean;
+        fingerprint256?: string;
+    };
     ccuAuth: CcuAuthConfig;
     eventServer: EventServerConfig;
     /** How blind position and slat tilt are written; see services/slatWriter.ts. */
@@ -162,6 +167,10 @@ export interface RawConfig extends PlatformConfig {
     interfaces?: Partial<InterfaceToggles>;
     interfacePorts?: Partial<Record<CcuInterfaceId, number>>;
     useTls?: boolean;
+    /** Accept any certificate on the CCU's TLS XML-RPC ports. */
+    tlsAllowSelfSigned?: boolean;
+    /** SHA-256 fingerprint of the CCU certificate; only that one is accepted. */
+    tlsCertFingerprint?: string;
     ccuAuth?: Partial<CcuAuthConfig>;
     eventServer?: Partial<EventServerConfig>;
     slatWriteMode?: string;

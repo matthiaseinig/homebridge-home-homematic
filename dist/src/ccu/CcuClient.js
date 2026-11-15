@@ -16,6 +16,7 @@ import { EventEmitter } from 'node:events';
 import { EventServer } from './EventServer.js';
 import { CcuJsonRpcClient } from './CcuJsonRpcClient.js';
 import { RpcClient, INTERFACE_PORTS } from './RpcClient.js';
+import { TLS_INTERFACE_PORTS } from './ccuTls.js';
 import { PLUGIN_NAME } from '../settings.js';
 const ENABLED_INTERFACES = [
     { id: 'BidCos-RF', flag: 'bidcosRf' },
@@ -32,6 +33,9 @@ export class CcuClient extends EventEmitter {
     datapointListeners = new Map();
     config;
     log;
+    /** ccuAuth credentials: JSON-API login and HTTP Basic on the XML-RPC ports. */
+    auth;
+    plainAuthWarned = false;
     watchdogTimer;
     lastEventAt = 0;
     started = false;
@@ -43,12 +47,13 @@ export class CcuClient extends EventEmitter {
         super();
         this.config = opts.config;
         this.log = opts.log;
+        this.auth = this.config.ccuAuth.enabled
+            ? { username: this.config.ccuAuth.username, password: this.config.ccuAuth.password }
+            : undefined;
         this.api = new CcuJsonRpcClient({
             host: this.config.ccuIp,
             useTls: this.config.useTls,
-            auth: this.config.ccuAuth.enabled
-                ? { username: this.config.ccuAuth.username, password: this.config.ccuAuth.password }
-                : undefined,
+            auth: this.auth,
             log: this.log.child('api'),
         });
         this.eventServer = new EventServer({
@@ -66,9 +71,12 @@ export class CcuClient extends EventEmitter {
             return;
         }
         await this.eventServer.start();
-        // Pull the actual XML-RPC ports from the CCU. RaspberryMatic exposes
-        // them at +30000 (32001/32010/39292), but a stock CCU3 still uses
-        // 2001/2010/9292 — so we trust whatever the CCU reports.
+        if (!this.config.useTls) {
+            this.warnPlainAuthOnce();
+        }
+        // Pull the XML-RPC ports from the CCU. CCU-internal loopback URLs
+        // (32001/32010/39292 on 127.0.0.1) are skipped for a remote CCU, which
+        // leaves the external defaults 2001/2010/9292.
         await this.refreshInterfacePorts();
         // Build a lookup of channel-address → interface so setValue can route
         // unprefixed addresses (the way they appear in hap-homematic backups)
@@ -86,25 +94,17 @@ export class CcuClient extends EventEmitter {
                 continue;
             }
             const callbackId = callbackIdFor(this.config.name, id);
-            // Resolution order: explicit user override > listInterfaces discovery
-            // > built-in default. The override is the only escape hatch when the
-            // CCU's reported port isn't actually reachable from this host (the
-            // common case is RaspberryMatic reporting +30000 ports that are
-            // firewalled off by the CCU's "Restrict access" firewall preset).
-            const overridePort = this.config.interfacePorts[id];
-            const port = overridePort
-                ?? this.discoveredPorts.get(id)
-                ?? INTERFACE_PORTS[id];
-            const portSource = overridePort !== undefined
-                ? 'config override'
-                : this.discoveredPorts.has(id) ? 'CCU listInterfaces' : 'built-in default';
-            this.log.info('Using XML-RPC port %d for %s (%s)', port, id, portSource);
+            const endpoint = this.rpcEndpoint(id);
+            const port = endpoint.port;
+            this.log.info('Using XML-RPC port %d for %s (%s%s)', port, id, endpoint.source, endpoint.tls ? ', TLS' : '');
             const client = new RpcClient({
                 interfaceId: id,
                 host: this.config.ccuIp,
                 port,
                 callbackUrl,
                 callbackId,
+                auth: endpoint.auth,
+                tls: endpoint.tls,
                 log: this.log.child(`rpc:${id}`),
             });
             try {
@@ -120,8 +120,8 @@ export class CcuClient extends EventEmitter {
                         + 'Configure firewall, and set "XML-RPC API" to "Open" or '
                         + '"Restricted access" with this Homebridge host whitelisted. '
                         + 'Alternatively, set interfacePorts.%s in the plugin config '
-                        + 'to a port that IS reachable (e.g. 2001/2010/9292 if Homebridge '
-                        + 'and the CCU share the same host).', this.config.ccuIp, port, id);
+                        + 'to a port that IS reachable (the external ports are '
+                        + '2001/2010/9292; 32001/32010/39292 only listen on the CCU itself).', this.config.ccuIp, port, id);
                 }
             }
         }
@@ -129,15 +129,62 @@ export class CcuClient extends EventEmitter {
         this.startWatchdog();
         this.started = true;
     }
+    /**
+     * Port, TLS and credentials for one interface. With useTls the CCU's TLS
+     * ports (42001/42010/42000/49292, or the interfacePorts override) are used
+     * and credentials never go over plain HTTP: an interface without a TLS
+     * port (CUxD) is reached without them. Without useTls: override >
+     * listInterfaces discovery (non-loopback URLs only) > built-in default.
+     */
+    rpcEndpoint(id) {
+        const override = this.config.interfacePorts[id];
+        if (this.config.useTls) {
+            const tlsPort = override ?? TLS_INTERFACE_PORTS[id];
+            if (tlsPort !== undefined) {
+                return {
+                    port: tlsPort,
+                    source: override !== undefined ? 'config override' : 'TLS default',
+                    auth: this.auth,
+                    tls: this.config.tls ?? { allowSelfSigned: false },
+                };
+            }
+            this.log.warn('%s has no TLS XML-RPC port; connecting over plain HTTP without the ccuAuth credentials', id);
+            return { port: this.discoveredPorts.get(id) ?? INTERFACE_PORTS[id], source: 'built-in default' };
+        }
+        const port = override ?? this.discoveredPorts.get(id) ?? INTERFACE_PORTS[id];
+        const source = override !== undefined
+            ? 'config override'
+            : this.discoveredPorts.has(id) ? 'CCU listInterfaces' : 'built-in default';
+        return { port, source, auth: this.auth };
+    }
+    warnPlainAuthOnce() {
+        if (!this.auth || this.plainAuthWarned) {
+            return;
+        }
+        this.plainAuthWarned = true;
+        this.log.warn('ccuAuth is set without useTls: the CCU credentials go over plain HTTP '
+            + '(JSON API and XML-RPC Basic auth) and can be read on the network. Enable useTls '
+            + '(TLS XML-RPC ports 42001/42010/49292) with tlsCertFingerprint.');
+    }
     async refreshInterfacePorts() {
         try {
             const list = await this.api.listInterfaces();
+            const remoteCcu = !isLoopbackHost(this.config.ccuIp);
             for (const i of list) {
                 const id = mapInterfaceName(i.name);
-                if (id) {
-                    this.discoveredPorts.set(id, i.port);
-                    this.log.debug('Interface %s on port %d', id, i.port);
+                if (!id) {
+                    continue;
                 }
+                // A CCU3 / RaspberryMatic lists its interfaces with the CCU-internal
+                // loopback URL (xmlrpc://127.0.0.1:32001, :32010, :39292/groups).
+                // Those ports only listen on the CCU itself; from another host the
+                // interfaces are reached on the external ports 2001/2010/9292.
+                if (remoteCcu && isLoopbackHost(urlHost(i.url))) {
+                    this.log.debug('Interface %s reported CCU-internal %s; using the external port', id, i.url ?? '');
+                    continue;
+                }
+                this.discoveredPorts.set(id, i.port);
+                this.log.debug('Interface %s on port %d', id, i.port);
             }
         }
         catch (err) {
@@ -381,6 +428,18 @@ export function callbackIdFor(blockName, interfaceId) {
     }
     const slug = blockName.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
     return `${PLUGIN_NAME}:${slug || 'block'}:${interfaceId}`;
+}
+/** Host part of an interface URL such as `xmlrpc://127.0.0.1:32001/`. */
+function urlHost(url) {
+    const m = url?.match(/^[a-z][a-z0-9+.-]*:\/\/(\[[^\]]+\]|[^/:]+)/i);
+    return m ? m[1].replace(/^\[|\]$/g, '') : undefined;
+}
+function isLoopbackHost(host) {
+    if (!host) {
+        return false;
+    }
+    const h = host.toLowerCase();
+    return h === 'localhost' || h === '::1' || /^127\.\d+\.\d+\.\d+$/.test(h);
 }
 function stripInterfacePrefix(address) {
     const dot = address.indexOf('.');
