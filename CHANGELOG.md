@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.8.2
+
+- **Gas meter: a sensor the CCU has not heard yet is "waiting", not "CCU not
+  readable" (#16).** When the gas sensor is reachable (`UNREACH` 0) but the CCU
+  has no value for its channel yet (no telegram since the CCU started,
+  `RSSI_DEVICE` -65535), every read of the channel fails with `XML-RPC: general
+  error`. The plugin logged that as "CCU not readable" on every start and
+  marked the whole meter as failed. It now logs one info line, keeps the
+  reachable and low battery state, shows no reading, and reads the counter as
+  soon as the CCU has a value. Other errors are still reported as before.
+- Every channel, variable and program accessory now sets its Accessory
+  Information SerialNumber to its stable key (`<device address>:<channel>`,
+  `var:<id>`, `prog:<name>`) instead of the Homebridge default serial. Accessory
+  UUIDs and the hap-homematic identity transplant are unchanged. The gas meter
+  keeps its serial `gas-meter`.
+
 ## 1.8.1
 
 - **Blind status channel: only for wired actuator layouts.** The transmitter is

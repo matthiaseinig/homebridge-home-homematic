@@ -75,6 +75,13 @@ export declare class GasService {
     pollOnce(): Promise<void>;
     /** A channel 0 flag; a datapoint the CCU does not know is undefined (warned once), other errors fail the poll. */
     private flag;
+    /**
+     * The channel's VALUES. A sender the CCU has not heard since it started
+     * (RSSI_DEVICE -65535, UNREACH 0) has no value for any datapoint: the CCU
+     * answers every read of the channel with a general error. That is no CCU
+     * failure; it is "no reading yet", and the next telegram ends it.
+     */
+    private readValues;
     private poll;
     private recordValues;
     /**

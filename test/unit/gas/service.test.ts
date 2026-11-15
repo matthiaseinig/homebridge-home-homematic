@@ -123,6 +123,29 @@ describe('GasService polling', () => {
     await stop(svc);
   });
 
+  it('shows a reachable device the CCU has no value for yet as waiting, not as CCU not readable, and reads it once a value arrives', async () => {
+    const { ccu, t, log, published, make, stop } = await setup();
+    const svc = make();
+    await svc.start();
+    await svc.ready;
+    ccu.handler = (c) => (c.method === 'Interface.getParamset' ? { error: { code: 501, message: 'XML-RPC: general error' } } : undefined);
+    await svc.pollOnce();
+    t.add(60_000);
+    await svc.pollOnce();
+    const waiting = published.at(-1)!;
+    expect(waiting.GasReachable).toBe(true);
+    expect(waiting.GasMeterReading).toBeUndefined();
+    expect(waiting.GasFlow).toBeUndefined();
+    expect(log.lines.filter((l) => l.includes('CCU not readable'))).toHaveLength(0);
+    expect(log.lines.filter((l) => l.includes('no value yet'))).toHaveLength(1);
+    ccu.handler = undefined;
+    t.add(60_000);
+    ccu.values = counter(53, 2);
+    await svc.pollOnce();
+    expect(published.at(-1)).toMatchObject({ GasReachable: true, GasMeterReading: 53 });
+    await stop(svc);
+  });
+
   it('holds a read of 0, re-bases on a glitch, counts a real reset and drops implausible jumps', async () => {
     const { ccu, t, published, log, make, stop } = await setup();
     ccu.values = counter(200);
