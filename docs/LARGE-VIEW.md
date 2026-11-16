@@ -55,10 +55,31 @@ intended change, run `node scripts/kit-hash.mjs --write` and bump the version.
 The kit lives under `public/` because config-ui-x serves the dialog iframe
 only from that folder.
 
-## Limits
+## Network requirements and limits
 
+- **Random port.** The listener takes a port the operating system assigns
+  (the ephemeral range, on Linux usually 32768 to 60999) and changes every
+  time the large view opens. It listens only while the dialog is open.
+- **Firewall.** A host firewall that blocks incoming connections (for example
+  ufw on Raspberry Pi OS) also blocks the page: the new window then cannot
+  load. Allow TCP from the LAN to the ephemeral range on the Homebridge
+  host's private address, for example
+  `sudo ufw allow from 10.10.10.0/24 to 10.10.10.225 port 32768:60999 proto tcp`
+  (adjust subnet and address). Homebridge UI itself still needs its own rule.
+- **Supported addresses.** Open the Homebridge UI on a private IPv4 address
+  (10/8, 172.16/12, 192.168/16), loopback, an IPv6 unique local address
+  (fc00::/7), or a host name that resolves to one of these on this host.
+  Not supported: Tailscale and other CGNAT addresses (100.64.0.0/10, refused
+  as not private), IPv6 link-local addresses (fe80::/10; a listener cannot
+  bind them without a zone id and the browser URL cannot carry one), public
+  addresses, and a Homebridge UI behind a reverse proxy on another host.
+- **HTTPS by host name (HSTS).** The page is always plain HTTP. If you open
+  the Homebridge UI over HTTPS by a host name that has HSTS (set by that
+  host, inherited from a parent domain with includeSubDomains, or a
+  preloaded TLD such as .dev or .app), the browser rewrites the page URL to
+  HTTPS and the window fails to load. Open the Homebridge UI by its IP
+  address instead. It holds no credentials, and writes still go through the
+  dialog.
 - Room is not editable: channels have no room setting, and discovery does
   not map CCU rooms to channels.
 - Tested in Chromium. Safari and Firefox are not tested yet.
-- The page is plain HTTP on the LAN even when the Homebridge UI uses HTTPS;
-  it holds no credentials, and writes still go through the dialog.

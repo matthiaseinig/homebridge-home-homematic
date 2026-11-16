@@ -22,7 +22,7 @@
  */
 
 import { createOpenerLink } from './kit/link.js';
-import { buildSnapshot, keptFields, processApply } from './large-view-host.js';
+import { applyAndStage, buildSnapshot, keptFields } from './large-view-host.js';
 
 // ---------------------------------------------------------------- helpers
 
@@ -1534,7 +1534,7 @@ function bufToBase64(buf) {
  * iframe checks them (large-view-host.js) and stages them with
  * updatePluginConfig. The owner still presses Save in the dialog.
  */
-const largeView = { win: null, link: null, timer: null };
+const largeView = { win: null, link: null, timer: null, applying: false };
 
 function setLargeViewMode(on) {
   $('hgui-app').classList.toggle('hgui-large-open', on);
@@ -1554,7 +1554,10 @@ function openLargeView() {
     largeView.link = createOpenerLink({ win: window, popup: win, pageOrigin: info.pageOrigin, onMessage: onLargeViewMessage });
     win.location.replace(info.url);
   }).catch((err) => {
+    const stillOpen = largeView.win === win;
     try { win.close(); } catch { /* ignore */ }
+    // Closed by the user before the server answered: the cancelled start is expected, no toast.
+    if (!stillOpen) return;
     endLargeView();
     toast('error', err.message, 'Large view');
   });
@@ -1597,16 +1600,22 @@ async function onLargeViewMessage(msg) {
       }
       break;
     case 'apply': {
-      const result = processApply(state, msg);
-      if (result.ok) {
-        state.blocks = result.blocks;
-        pushConfig();
-        link.send('applied', { ok: true, count: msg.ops.length });
-        toast('success', `${msg.ops.length} change(s) from the large view staged. Press Save to write them.`, 'Large view');
-      } else {
-        link.send('applied', { ok: false, code: result.code, error: result.error });
+      // One Apply at a time: a second one must not pass the revision check
+      // while the first is still being staged.
+      if (largeView.applying) { link.send('applied', { ok: false, code: 'busy', error: 'Eine Übernahme läuft bereits' }); break; }
+      largeView.applying = true;
+      try {
+        const { blocks, reply } = await applyAndStage(state, msg,
+          (next) => homebridge.updatePluginConfig([...state.otherBlocks, ...next]));
+        if (blocks) {
+          state.blocks = blocks;
+          toast('success', `${reply.count} change(s) from the large view staged. Press Save to write them.`, 'Large view');
+        }
+        link.send('applied', reply);
+        sendLargeViewSnapshot();
+      } finally {
+        largeView.applying = false;
       }
-      sendLargeViewSnapshot();
       break;
     }
     default:

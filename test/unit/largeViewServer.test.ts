@@ -173,6 +173,47 @@ describe('large view: controller and shutdown', () => {
     expect(await portIsFree(d.port)).toBe(true);
   });
 
+  it('stop() during a start in flight cancels it: nothing keeps listening', async () => {
+    const c = make();
+    const realStart = LargeViewServer.prototype.start;
+    const opened: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const startSpy = vi.spyOn(LargeViewServer.prototype, 'start').mockImplementation(async function (this: LargeViewServer) {
+      const r = await realStart.call(this);
+      opened.push(r.port);
+      await gate; // the listener is up, /large-view/info has not answered yet
+      return r;
+    });
+    try {
+      const info = c.info({ origin: 'http://127.0.0.1:8581' });
+      await vi.waitFor(() => expect(opened).toHaveLength(1));
+      const stopping = c.stop(); // popup closed before /large-view/info answered
+      release();
+      expect(await stopping).toEqual({ stopped: false });
+      await expect(info).rejects.toBeInstanceOf(LargeViewError);
+      expect(c.running).toBe(false);
+      expect(await portIsFree(opened[0]!)).toBe(true);
+      startSpy.mockRestore();
+      // A new request after the stop works again.
+      const again = await c.info({ origin: 'http://127.0.0.1:8581' });
+      expect(c.running).toBe(true);
+      await c.stop();
+      expect(await portIsFree(again.port)).toBe(true);
+    } finally {
+      startSpy.mockRestore();
+      release();
+    }
+  });
+
+  it('stop() right after info() cancels the start before it listens', async () => {
+    const c = make();
+    const info = c.info({ origin: 'http://127.0.0.1:8581' });
+    expect(await c.stop()).toEqual({ stopped: false });
+    await expect(info).rejects.toBeInstanceOf(LargeViewError);
+    expect(c.running).toBe(false);
+  });
+
   it('starts only one listener for concurrent requests', async () => {
     const c = make();
     const [a, b] = await Promise.all([c.info({ origin: 'http://127.0.0.1:8581' }), c.info({ origin: 'http://127.0.0.1:8581' })]);

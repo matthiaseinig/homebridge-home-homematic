@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error plain browser ES module without types
-import { SECRET_KEYS, buildSnapshot, configRevision, keptFields, processApply } from '../../homebridge-ui/public/large-view-host.js';
+import { SECRET_KEYS, applyAndStage, buildSnapshot, configRevision, keptFields, processApply } from '../../homebridge-ui/public/large-view-host.js';
 
 const SERVICES = [
   { key: 'SwitchAccessory', description: 'Switch', channelTypes: ['SWITCH_VIRTUAL_RECEIVER'], variants: [] },
@@ -159,5 +159,41 @@ describe('keptFields (shared with the dialog editor)', () => {
     expect(keptFields(entry, true, ['address', 'name'])).toEqual({ uuidSeed: 's', instance: 'i' });
     expect(keptFields(entry, false, ['address', 'name'])).toEqual({ instance: 'i' });
     expect(keptFields(null, true, [])).toEqual({});
+  });
+});
+
+describe('large view host: apply and stage', () => {
+  const rev = () => configRevision(blocks());
+  const op = { op: 'set', address: 'AAA:1', name: 'Neu', service: 'SwitchAccessory', bridgeIndex: 0 };
+
+  it('reports ok only after updatePluginConfig resolved, with the staged blocks', async () => {
+    let resolveStage!: () => void;
+    const staged: any[] = [];
+    const stage = (b: any) => { staged.push(b); return new Promise<void>((r) => { resolveStage = r; }); };
+    let done = false;
+    const p = applyAndStage(state(), { revision: rev(), ops: [op] }, stage).then((r: any) => { done = true; return r; });
+    await Promise.resolve();
+    expect(staged).toHaveLength(1);
+    expect(done).toBe(false);
+    resolveStage();
+    const r = await p;
+    expect(r.reply).toEqual({ ok: true, count: 1 });
+    expect(r.blocks).toBe(staged[0]);
+    expect(r.blocks[0].channels[0].name).toBe('Neu');
+    expect(r.blocks[0].ccuAuth.password).toBe('very-secret-pw');
+  });
+
+  it('reports a failure and returns no blocks when updatePluginConfig rejects', async () => {
+    const r = await applyAndStage(state(), { revision: rev(), ops: [op] }, async () => { throw new Error('config.update refused'); });
+    expect(r.blocks).toBeUndefined();
+    expect(r.reply).toMatchObject({ ok: false, code: 'failed' });
+    expect(r.reply.error).toContain('config.update refused');
+  });
+
+  it('does not stage a rejected Apply', async () => {
+    const stage = vi.fn();
+    const r = await applyAndStage(state(), { revision: 'old', ops: [op] }, stage);
+    expect(stage).not.toHaveBeenCalled();
+    expect(r.reply).toMatchObject({ ok: false, code: 'stale' });
   });
 });

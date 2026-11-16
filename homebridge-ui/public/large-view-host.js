@@ -137,3 +137,20 @@ export function processApply(state, msg) {
   }
   return { ok: true, blocks };
 }
+
+/**
+ * Apply plus staging: `stage(blocks)` is the dialog's updatePluginConfig
+ * call. The page hears "ok" only after Homebridge took the new config; on a
+ * rejection it hears why and the dialog keeps its old blocks.
+ * Returns { blocks?, reply } where reply goes to the page as "applied".
+ */
+export async function applyAndStage(state, msg, stage) {
+  const result = processApply(state, msg);
+  if (!result.ok) return { reply: { ok: false, code: result.code, error: result.error } };
+  try {
+    await stage(result.blocks);
+  } catch (err) {
+    return { reply: { ok: false, code: 'failed', error: `Homebridge hat die Änderungen nicht angenommen: ${err?.message ?? String(err)}` } };
+  }
+  return { blocks: result.blocks, reply: { ok: true, count: msg.ops.length } };
+}

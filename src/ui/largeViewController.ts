@@ -33,6 +33,8 @@ export class LargeViewController {
   private server: LargeViewServer | null = null;
   private started: LargeViewStarted | null = null;
   private pending: Promise<LargeViewInfo> | null = null;
+  /** Bumped by stop(); a start begun before it is cancelled. */
+  private generation = 0;
 
   constructor(private readonly opts: LargeViewControllerOptions) {}
 
@@ -45,31 +47,48 @@ export class LargeViewController {
     const origin = (payload as { origin?: unknown } | null | undefined)?.origin;
     parseOpenerOrigin(origin);
     // Serialise: two quick clicks must not start two listeners.
-    const run = (this.pending ?? Promise.resolve()).catch(() => undefined).then(() => this.ensure(origin as string));
+    const generation = this.generation;
+    const run = (this.pending ?? Promise.resolve()).catch(() => undefined).then(() => this.ensure(origin as string, generation));
     this.pending = run;
     return run;
   }
 
-  private async ensure(origin: string): Promise<LargeViewInfo> {
+  private async ensure(origin: string, generation: number): Promise<LargeViewInfo> {
+    if (generation !== this.generation) throw new LargeViewError('the large view was closed');
     if (this.server?.running && this.started && this.server.openerOrigin === origin) {
       return { ...this.started, openerOrigin: origin };
     }
-    await this.stop();
+    await this.stopServer();
     const server = await LargeViewServer.create({ ...this.opts, openerOrigin: origin });
     const started = await server.start();
+    if (generation !== this.generation) {
+      // stop() ran while this start was in flight: never leave it listening.
+      await server.stop();
+      throw new LargeViewError('the large view was closed');
+    }
     this.server = server;
     this.started = started;
     return { ...started, openerOrigin: origin };
   }
 
-  /** Handler of `/large-view/stop` and of the shutdown hooks. */
+  /**
+   * Handler of `/large-view/stop` and of the shutdown hooks. Also cancels a
+   * start that is still in flight: when this resolves, nothing listens.
+   */
   async stop(): Promise<{ stopped: boolean }> {
+    this.generation++;
+    const pending = this.pending;
+    if (pending) await pending.catch(() => undefined);
+    return { stopped: await this.stopServer() };
+  }
+
+  private async stopServer(): Promise<boolean> {
     const server = this.server;
     this.server = null;
     this.started = null;
-    if (!server) return { stopped: false };
+    if (!server) return false;
     await server.stop();
-    return { stopped: true };
+    return true;
   }
 
   /**

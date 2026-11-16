@@ -22,15 +22,21 @@ export declare class LargeViewController {
     private server;
     private started;
     private pending;
+    /** Bumped by stop(); a start begun before it is cancelled. */
+    private generation;
     constructor(opts: LargeViewControllerOptions);
     get running(): boolean;
     /** Handler of `/large-view/info`: `{ origin }` is the dialog iframe's `location.origin`. */
     info(payload: unknown): Promise<LargeViewInfo>;
     private ensure;
-    /** Handler of `/large-view/stop` and of the shutdown hooks. */
+    /**
+     * Handler of `/large-view/stop` and of the shutdown hooks. Also cancels a
+     * start that is still in flight: when this resolves, nothing listens.
+     */
     stop(): Promise<{
         stopped: boolean;
     }>;
+    private stopServer;
     /**
      * Closes the listener when the dialog closes. plugin-ui-utils answers an
      * IPC disconnect with SIGTERM to itself; a SIGTERM listener replaces Node's

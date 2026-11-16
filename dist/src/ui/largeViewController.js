@@ -10,6 +10,8 @@ export class LargeViewController {
     server = null;
     started = null;
     pending = null;
+    /** Bumped by stop(); a start begun before it is cancelled. */
+    generation = 0;
     constructor(opts) {
         this.opts = opts;
     }
@@ -21,30 +23,48 @@ export class LargeViewController {
         const origin = payload?.origin;
         parseOpenerOrigin(origin);
         // Serialise: two quick clicks must not start two listeners.
-        const run = (this.pending ?? Promise.resolve()).catch(() => undefined).then(() => this.ensure(origin));
+        const generation = this.generation;
+        const run = (this.pending ?? Promise.resolve()).catch(() => undefined).then(() => this.ensure(origin, generation));
         this.pending = run;
         return run;
     }
-    async ensure(origin) {
+    async ensure(origin, generation) {
+        if (generation !== this.generation)
+            throw new LargeViewError('the large view was closed');
         if (this.server?.running && this.started && this.server.openerOrigin === origin) {
             return { ...this.started, openerOrigin: origin };
         }
-        await this.stop();
+        await this.stopServer();
         const server = await LargeViewServer.create({ ...this.opts, openerOrigin: origin });
         const started = await server.start();
+        if (generation !== this.generation) {
+            // stop() ran while this start was in flight: never leave it listening.
+            await server.stop();
+            throw new LargeViewError('the large view was closed');
+        }
         this.server = server;
         this.started = started;
         return { ...started, openerOrigin: origin };
     }
-    /** Handler of `/large-view/stop` and of the shutdown hooks. */
+    /**
+     * Handler of `/large-view/stop` and of the shutdown hooks. Also cancels a
+     * start that is still in flight: when this resolves, nothing listens.
+     */
     async stop() {
+        this.generation++;
+        const pending = this.pending;
+        if (pending)
+            await pending.catch(() => undefined);
+        return { stopped: await this.stopServer() };
+    }
+    async stopServer() {
         const server = this.server;
         this.server = null;
         this.started = null;
         if (!server)
-            return { stopped: false };
+            return false;
         await server.stop();
-        return { stopped: true };
+        return true;
     }
     /**
      * Closes the listener when the dialog closes. plugin-ui-utils answers an
