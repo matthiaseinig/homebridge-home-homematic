@@ -101,6 +101,12 @@
   @media (max-width: 700px) { .hgui-form-row { grid-template-columns: 1fr; } }
   .hgui-form-row label { padding-top: 0.5rem; font-weight: 500; color: var(--bs-body-color); }
   .hgui-form-row .hgui-hint { color: var(--bs-secondary-color); font-size: 0.825rem; margin-top: 0.25rem; }
+
+  /* Large view open: the dialog form is hidden so there is one place to edit. */
+  #hgui-large-banner { display: none; }
+  #hgui-app.hgui-large-open #hgui-large-banner { display: block; }
+  #hgui-app.hgui-large-open .hgui-main,
+  #hgui-app.hgui-large-open .hgui-header > :not(.hgui-version) { display: none; }
 </style>
 
 <div id="hgui-app">
@@ -119,8 +125,20 @@
     <button id="hgui-discover-btn" class="btn btn-primary btn-sm">Discover</button>
     <button id="hgui-test-btn" class="btn btn-outline-secondary btn-sm">Test CCU</button>
     <span id="hgui-test-result" class="small"></span>
+    <button id="hgui-large-btn" class="btn btn-outline-primary btn-sm" title="Full-width channel table in a separate window">Open large view</button>
     <span class="hgui-version ms-auto" id="hgui-version-banner"></span>
   </header>
+
+  <div id="hgui-large-banner" class="hgui-card">
+    <h6>Large view is open</h6>
+    <p class="hgui-meta">Edit the channels in the separate window and press "Übernehmen" there. Then press Save below
+       to write the changes (Homebridge makes a backup and offers to restart the child bridge).
+       This form is hidden while the large view is open.</p>
+    <div class="d-flex gap-2 flex-wrap">
+      <button id="hgui-large-focus" class="btn btn-primary btn-sm">Show large view</button>
+      <button id="hgui-large-close" class="btn btn-outline-secondary btn-sm">Close large view</button>
+    </div>
+  </div>
 
   <main class="hgui-main">
     <div id="hgui-view-host"></div>

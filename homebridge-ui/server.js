@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import process2 from "node:process";
 
 // node_modules/@homebridge/plugin-ui-utils/dist/server.js
 import process from "node:process";
@@ -168,6 +169,8 @@ import {
   VARIABLE_SERVICE_DEFINITIONS,
   servicesForChannelType
 } from "../dist/src/services/registry.js";
+import { LargeViewController } from "../dist/src/ui/largeViewController.js";
+import { LargeViewError } from "../dist/src/ui/largeViewServer.js";
 var PLUGIN_VERSION = (() => {
   const here = dirname(fileURLToPath(import.meta.url));
   const pkgPath = resolvePath(here, "..", "package.json");
@@ -186,6 +189,15 @@ var PLUGIN_VERSION = (() => {
   }
   return version;
 })();
+var UI_DIR = dirname(fileURLToPath(import.meta.url));
+var LARGE_VIEW_DIR = resolvePath(UI_DIR, "large-view");
+var KIT_DIR = resolvePath(UI_DIR, "public", "kit");
+var LARGE_VIEW_ASSETS = {
+  "/page.js": { file: resolvePath(LARGE_VIEW_DIR, "page.js"), contentType: "text/javascript; charset=utf-8" },
+  "/page.css": { file: resolvePath(LARGE_VIEW_DIR, "page.css"), contentType: "text/css; charset=utf-8" },
+  "/table-model.js": { file: resolvePath(LARGE_VIEW_DIR, "table-model.js"), contentType: "text/javascript; charset=utf-8" },
+  "/kit/link.js": { file: resolvePath(KIT_DIR, "link.js"), contentType: "text/javascript; charset=utf-8" }
+};
 var MAX_BASE64_BYTES = 96 * 1024 * 1024;
 var UiLogger = class {
   info(...args) {
@@ -216,10 +228,27 @@ var HomematicHapUiServer = class extends HomebridgePluginUiServer {
     this.onRequest("/import-backup", (payload) => this.handleImportBackup(payload));
     this.onRequest("/import-config-json", (payload) => this.handleImportConfigJson(payload));
     this.onRequest("/split-into-bridges", (payload) => this.handleSplitIntoBridges(payload));
+    this.onRequest("/large-view/info", (payload) => this.handleLargeViewInfo(payload));
+    this.onRequest("/large-view/stop", () => this.largeView.stop());
+    this.largeView = new LargeViewController({
+      indexFile: resolvePath(LARGE_VIEW_DIR, "index.html"),
+      assets: LARGE_VIEW_ASSETS
+    });
+    this.largeView.installShutdownHooks(process2, (code) => process2.exit(code));
     this.ready();
     console.log("[homebridge-homematic-hap UI] handlers registered, ready signaled");
   }
   // --- handlers ----------------------------------------------------
+  async handleLargeViewInfo(payload) {
+    try {
+      return await this.largeView.info(payload);
+    } catch (err) {
+      if (err instanceof LargeViewError) {
+        throw new RequestError(err.message, { status: 400 });
+      }
+      throw new RequestError(`Large view failed: ${err.message}`, { status: 500 });
+    }
+  }
   handleServices() {
     return {
       pluginVersion: PLUGIN_VERSION,

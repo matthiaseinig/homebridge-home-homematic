@@ -1,0 +1,50 @@
+/* Large view of the HomeMatic HAP settings. No external resources (CSP default-src 'none'). */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #d0d7de; --row: #f6f8fa;
+  --accent: #0969da; --accent-fg: #ffffff; --changed: #fff8c5; --ok: #1a7f37; --warn: #9a6700; --error: #cf222e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --line: #30363d; --row: #161b22;
+    --accent: #2f81f7; --accent-fg: #ffffff; --changed: #3b2e00; --ok: #3fb950; --warn: #d29922; --error: #f85149;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+/* Header, toolbar and status stay put; only the table scrolls (its head sticks to the top of it). */
+body { display: flex; flex-direction: column; height: 100vh; }
+.bar { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); }
+.bar h1 { font-size: 1.15rem; margin: 0; flex: 1; }
+.muted { color: var(--muted); }
+.small { font-size: 0.8rem; }
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.8rem; color: var(--muted); }
+.pill.ok { color: var(--ok); border-color: var(--ok); }
+.pill.error { color: var(--error); border-color: var(--error); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.6rem 1rem; background: var(--bg); border-bottom: 1px solid var(--line); }
+.toolbar input[type="search"] { flex: 0 1 26rem; min-width: 12rem; }
+.spacer { flex: 1; }
+input, select, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.5rem; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+.status { padding: 0 1rem; min-height: 0; }
+.status.info, .status.ok, .status.warn, .status.error { padding: 0.5rem 1rem; border-bottom: 1px solid var(--line); }
+.status.ok { color: var(--ok); }
+.status.warn { color: var(--warn); }
+.status.error { color: var(--error); }
+.table-wrap { flex: 1; min-height: 0; padding: 0 1rem 1rem; overflow: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+thead th { position: sticky; top: 0; background: var(--bg); z-index: 1; font-weight: 600; white-space: nowrap; }
+tbody tr:nth-child(even) { background: var(--row); }
+tbody tr.off td:not(.c-hk) { color: var(--muted); }
+tbody tr.changed { background: var(--changed); }
+tbody tr.undiscovered code { color: var(--warn); }
+td input[type="text"] { width: 100%; min-width: 12rem; }
+td select { max-width: 16rem; }
+.c-hk { width: 4.5rem; text-align: center; }
+code { font-size: 0.85em; }
+.empty { color: var(--muted); font-style: italic; padding: 2rem; text-align: center; }
+.foot { padding: 0.5rem 1rem; font-size: 0.85rem; border-top: 1px solid var(--line); }
+@media (max-width: 700px) { .toolbar input[type="search"] { flex-basis: 100%; } }
