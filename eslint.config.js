@@ -30,11 +30,19 @@ export default tseslint.config(
         homebridge: 'readonly',
         bootstrap: 'readonly',
         setTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        structuredClone: 'readonly',
+        CSS: 'readonly',
       },
     },
     rules: {
       'no-console': 'off',
     },
+  },
+  {
+    files: ['scripts/kit-hash.mjs'],
+    languageOptions: { globals: { console: 'readonly' } },
   },
   {
     files: ['test/**/*.ts'],

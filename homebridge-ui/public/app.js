@@ -21,6 +21,9 @@
  *   - Footer "Save configuration" pushes state.blocks to homebridge.
  */
 
+import { createOpenerLink } from './kit/link.js';
+import { applyAndStage, buildSnapshot, keptFields } from './large-view-host.js';
+
 // ---------------------------------------------------------------- helpers
 
 const $ = (id) => document.getElementById(id);
@@ -981,20 +984,7 @@ function drawPicker() {
 
 // --- editChannel: form
 
-/**
- * Fields of an existing mapping that an edit form does not touch. The
- * HomeKit identity seed only survives while the entry stays on its bridge.
- */
-function keptFields(entry, sameBridge, edited) {
-  if (!entry) return {};
-  const out = {};
-  for (const [k, v] of Object.entries(entry)) {
-    if (edited.includes(k)) continue;
-    if (k === 'uuidSeed' && !sameBridge) continue;
-    out[k] = v;
-  }
-  return out;
-}
+// keptFields() lives in large-view-host.js (shared with the large view).
 
 function subEditChannel(host, props) {
   const { address, mode } = props;
@@ -1535,6 +1525,104 @@ function bufToBase64(buf) {
   return btoa(binary);
 }
 
+// ---------------------------------------------------------------- large view
+
+/**
+ * Large view (issue Home#614): a full-width page in its own window, served
+ * by this plugin's custom UI server while the dialog is open. The page only
+ * talks to this iframe (kit/link.js); it sends channel operations, this
+ * iframe checks them (large-view-host.js) and stages them with
+ * updatePluginConfig. The owner still presses Save in the dialog.
+ */
+const largeView = { win: null, link: null, timer: null, applying: false };
+
+function setLargeViewMode(on) {
+  $('hgui-app').classList.toggle('hgui-large-open', on);
+}
+
+function openLargeView() {
+  if (largeView.win && !largeView.win.closed) { largeView.win.focus(); return; }
+  // Synchronous, inside the click: browsers block a window.open that runs
+  // after an await. The URL is set once the server has started the listener.
+  const win = window.open('about:blank', '_blank');
+  if (!win) { toast('error', 'The browser blocked the new window. Allow pop-ups for Homebridge and try again.', 'Large view'); return; }
+  largeView.win = win;
+  setLargeViewMode(true);
+  largeView.timer = setInterval(() => { if (win.closed) endLargeView(); }, 1000);
+  homebridge.request('/large-view/info', { origin: window.location.origin }).then((info) => {
+    if (win.closed || largeView.win !== win) return;
+    largeView.link = createOpenerLink({ win: window, popup: win, pageOrigin: info.pageOrigin, onMessage: onLargeViewMessage });
+    win.location.replace(info.url);
+  }).catch((err) => {
+    const stillOpen = largeView.win === win;
+    try { win.close(); } catch { /* ignore */ }
+    // Closed by the user before the server answered: the cancelled start is expected, no toast.
+    if (!stillOpen) return;
+    endLargeView();
+    toast('error', err.message, 'Large view');
+  });
+}
+
+function closeLargeView() {
+  try { largeView.win?.close(); } catch { /* ignore */ }
+  endLargeView();
+}
+
+function endLargeView() {
+  if (largeView.timer) clearInterval(largeView.timer);
+  largeView.link?.close();
+  const wasOpen = !!largeView.win;
+  largeView.win = null; largeView.link = null; largeView.timer = null;
+  setLargeViewMode(false);
+  if (wasOpen) {
+    rerender();
+    homebridge.request('/large-view/stop').catch(() => { /* child may already be gone */ });
+  }
+}
+
+function sendLargeViewSnapshot() {
+  largeView.link?.send('snapshot', buildSnapshot(state));
+}
+
+async function onLargeViewMessage(msg) {
+  const link = largeView.link;
+  if (!link) return;
+  switch (msg.type) {
+    case 'hello':
+      sendLargeViewSnapshot();
+      break;
+    case 'discover':
+      try {
+        state.discovered = await homebridge.request('/discover', state.blocks[0]);
+        sendLargeViewSnapshot();
+      } catch (err) {
+        link.send('error', { error: err.message });
+      }
+      break;
+    case 'apply': {
+      // One Apply at a time: a second one must not pass the revision check
+      // while the first is still being staged.
+      if (largeView.applying) { link.send('applied', { ok: false, code: 'busy', error: 'Eine Übernahme läuft bereits' }); break; }
+      largeView.applying = true;
+      try {
+        const { blocks, reply } = await applyAndStage(state, msg,
+          (next) => homebridge.updatePluginConfig([...state.otherBlocks, ...next]));
+        if (blocks) {
+          state.blocks = blocks;
+          toast('success', `${reply.count} change(s) from the large view staged. Press Save to write them.`, 'Large view');
+        }
+        link.send('applied', reply);
+        sendLargeViewSnapshot();
+      } finally {
+        largeView.applying = false;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 // ---------------------------------------------------------------- init
 
 async function init() {
@@ -1581,10 +1669,14 @@ async function init() {
   $('hgui-view-select').addEventListener('change', (e) => navigate(e.target.value));
   $('hgui-discover-btn').addEventListener('click', onDiscover);
   $('hgui-test-btn').addEventListener('click', onTestConnection);
+  $('hgui-large-btn').addEventListener('click', openLargeView);
+  $('hgui-large-focus').addEventListener('click', () => largeView.win?.focus());
+  $('hgui-large-close').addEventListener('click', closeLargeView);
+  window.addEventListener('pagehide', () => { try { largeView.win?.close(); } catch { /* ignore */ } });
 
   // Esc pops the sub-view stack (back button affordance).
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && state.nav.length) popNav();
+    if (e.key === 'Escape' && state.nav.length && !largeView.win) popNav();
   });
 
   // Initial tab: if the user hasn't configured a CCU yet, drop them

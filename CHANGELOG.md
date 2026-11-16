@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.9.0
+
+- **Large view for the channel settings (Home#614).** The settings dialog has
+  an "Open large view" button. It opens a full-width page in its own window
+  with all channels in one table: search, filter, and inline edit of the
+  HomeKit name, service, variant, bridge and whether the channel is in
+  HomeKit. "Übernehmen" on the page stages the changes in the dialog; Save in
+  the dialog writes them as before (config-ui-x backup and child-bridge
+  restart prompt). The plugin never writes config.json itself.
+- The page is served by the custom UI server only while the dialog is open,
+  on a random port of the one private address the dialog was loaded from. It
+  checks the Host header, sends `frame-ancestors 'none'`, serves a fixed set
+  of static files and closes when the dialog closes. It has no API: it talks
+  only to the dialog that opened it, by postMessage with source and origin
+  checks. The CCU credentials (`ccuAuth`) never reach the page, and an Apply
+  based on an outdated config is rejected.
+- The postMessage link is a small shared kit (`homebridge-ui/public/kit/`)
+  with a version header and a hash check (`npm run kit:check`).
+- Room is not editable in the large view: channels have no room setting, and
+  discovery does not map CCU rooms to channels.
+
 ## 1.8.2
 
 - **Gas meter: a sensor the CCU has not heard yet is "waiting", not "CCU not

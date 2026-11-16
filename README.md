@@ -97,6 +97,10 @@ is stable for the first time. The core:
 - A Bootstrap-5-styled custom UI (no SPA framework) for connection
   testing, device discovery, per-channel service selection, variable /
   program selection, and hap-homematic backup import
+- A large view: "Open large view" in the settings dialog opens a
+  full-width channel table (search, inline edit of name, service,
+  variant, bridge and HomeKit on/off) in its own window; see
+  [docs/LARGE-VIEW.md](docs/LARGE-VIEW.md)
 - ≥ 95 % line / statement / function test coverage; defensive value
   sanitization (NaN / Infinity / out-of-range guarded at every CCU →
   HomeKit boundary); auto-detect for the CCU `LEVEL` 0..1 vs 0..100

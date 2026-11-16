@@ -1,0 +1,68 @@
+<!doctype html>
+<!--
+  Large view of the HomeMatic HAP settings (issue Home#614). Served by the
+  plugin's custom UI server only while the Homebridge settings dialog is
+  open (src/ui/largeViewServer.ts). It has no data of its own: everything
+  comes by postMessage from the dialog that opened it (kit/link.js).
+  %%OPENER_ORIGIN%% is replaced with the dialog origin by the server.
+-->
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="hm-opener-origin" content="%%OPENER_ORIGIN%%">
+  <title>HomeMatic HAP: Kanäle</title>
+  <link rel="stylesheet" href="/page.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>HomeMatic HAP: Kanäle <span id="version" class="muted"></span></h1>
+    <span id="link-state" class="pill">Verbinde…</span>
+  </header>
+
+  <section class="toolbar" aria-label="Filter und Aktionen">
+    <input id="search" type="search" placeholder="Suchen: Name, Gerät, Adresse, Typ, Dienst" aria-label="Suchen" autocomplete="off">
+    <select id="filter" aria-label="Anzeigen">
+      <option value="all">Alle Kanäle</option>
+      <option value="hk">In HomeKit</option>
+      <option value="nohk">Nicht in HomeKit</option>
+      <option value="changed">Geändert</option>
+    </select>
+    <button id="discover" type="button">CCU einlesen</button>
+    <span id="counts" class="muted"></span>
+    <span class="spacer"></span>
+    <span id="pending" class="muted"></span>
+    <button id="discard" type="button" disabled>Verwerfen</button>
+    <button id="apply" type="button" class="primary" disabled>Übernehmen</button>
+  </section>
+
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+
+  <main class="table-wrap">
+    <table id="table">
+      <thead>
+        <tr>
+          <th class="c-hk" title="In HomeKit anzeigen">HomeKit</th>
+          <th>Name in HomeKit</th>
+          <th>Gerät</th>
+          <th>CCU-Kanal</th>
+          <th>Adresse</th>
+          <th>Kanaltyp</th>
+          <th>Dienst</th>
+          <th>Variante</th>
+          <th>Bridge</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="empty" hidden>Keine Kanäle gefunden.</p>
+  </main>
+
+  <footer class="foot muted">
+    "Übernehmen" überträgt die Änderungen in den Homebridge-Dialog. Erst "Speichern" im Dialog schreibt sie
+    (mit Sicherung und Neustart-Angebot für die Child Bridge). Die CCU-Zugangsdaten sind auf dieser Seite nicht vorhanden.
+  </footer>
+
+  <script type="module" src="/page.js"></script>
+</body>
+</html>
